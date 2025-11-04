@@ -40,7 +40,7 @@ export default function YourLoanScreen() {
   const { wallet } = useWallet();
   const { mezoClient, collateralInfo, isLoading, error, refetch } = useMezo();
   
-  const [btcPrice, setBtcPrice] = useState(60000);
+  const [btcPrice, setBtcPrice] = useState(100000);
   const [interestRate, setInterestRate] = useState(1.0); // Default 1% APR
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTransactions, setLoadingTransactions] = useState(false);
@@ -179,10 +179,7 @@ export default function YourLoanScreen() {
         <View style={styles.actionButtons}>
           <Button
             title="Add MUSD to wallet"
-            onPress={() => {
-              // TODO: Implement add MUSD functionality
-              router.push('/borrow' as any);
-            }}
+            onPress={() => router.push('/swap' as any)}
             variant="outline"
             size="md"
             leftIcon={<Ionicons name="wallet" size={20} color={DesignColors.yellow.primary} />}
@@ -209,7 +206,7 @@ export default function YourLoanScreen() {
                   style={styles.menuItem}
                   onPress={() => {
                     setShowManageMenu(false);
-                    router.push('/borrow' as any);
+                    router.push('/add-collateral' as any);
                   }}>
                   <Ionicons name="add-circle" size={20} color={DesignColors.yellow.primary} />
                   <Text style={styles.menuItemText}>Add Collateral</Text>
@@ -218,7 +215,7 @@ export default function YourLoanScreen() {
                   style={styles.menuItem}
                   onPress={() => {
                     setShowManageMenu(false);
-                    router.push('/borrow' as any);
+                    router.push('/repay-debt' as any);
                   }}>
                   <Ionicons name="remove-circle" size={20} color={DesignColors.yellow.primary} />
                   <Text style={styles.menuItemText}>Repay Debt</Text>

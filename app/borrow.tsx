@@ -40,7 +40,7 @@ export default function BorrowScreen() {
   const [ltv, setLtv] = useState(0); // 0-90.91% LTV (based on 110% MCR)
   const [musdAmount, setMusdAmount] = useState('');
   const [isBorrowing, setIsBorrowing] = useState(false);
-  const [btcPrice, setBtcPrice] = useState(60000); // Default BTC price
+  const [btcPrice, setBtcPrice] = useState(100000); // Default BTC price
   const [calculatingHints, setCalculatingHints] = useState(false);
 
   const maxLTV = 90.91; // ~90.91% max LTV (based on 110% MCR: 1/1.1 = 0.9091)
@@ -176,12 +176,15 @@ export default function BorrowScreen() {
           },
         ]);
       } else {
-        Alert.alert('Error', result.error || 'Failed to borrow MUSD');
+        // Show user-friendly error message
+        const errorMessage = result.error || 'Failed to borrow MUSD';
+        Alert.alert('Transaction Failed', errorMessage);
       }
     } catch (error) {
       setCalculatingHints(false);
       console.error('Error borrowing:', error);
-      Alert.alert('Error', error instanceof Error ? error.message : 'Failed to borrow MUSD');
+      const errorMessage = error instanceof Error ? error.message : 'Failed to borrow MUSD';
+      Alert.alert('Error', errorMessage);
     } finally {
       setIsBorrowing(false);
     }

@@ -45,7 +45,7 @@ export function BorrowingPowerChecker({
   const [collateralizationRatio, setCollateralizationRatio] = useState(
     defaultCollateralizationRatio || getRecommendedCollateralizationRatio(),
   );
-  const [btcPrice, setBtcPrice] = useState(60000); // Default BTC price
+  const [btcPrice, setBtcPrice] = useState(100000); // Default BTC price
   const [borrowingFeeRate, setBorrowingFeeRate] = useState(10); // Default 0.1% (10 basis points)
   const [isLoadingPrice, setIsLoadingPrice] = useState(false);
   const [showLiquidationInfo, setShowLiquidationInfo] = useState(false);
