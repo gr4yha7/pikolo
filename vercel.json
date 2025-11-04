@@ -1,0 +1,15 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/resolve-markets",
+      "schedule": "*/5 * * * *"
+    }
+  ],
+  "functions": {
+    "api/resolve-markets.ts": {
+      "maxDuration": 300
+    }
+  }
+}
+
