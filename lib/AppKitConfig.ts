@@ -5,11 +5,12 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // Note: Bitcoin network support removed - focusing on Mezo testnet (matsnet) and Sepolia
 // import { BitcoinAdapter } from '@reown/appkit-bitcoin-react-native';
 // import { EthersAdapter } from '@reown/appkit-ethers-react-native';
-import { AppKitNetwork, createAppKit, type Storage } from '@reown/appkit-react-native';
+import { mezoTestnetChain } from '@/constants/chain';
+import { createAppKit, type Storage } from '@reown/appkit-react-native';
 import { WagmiAdapter } from '@reown/appkit-wagmi-react-native';
 import { safeJsonParse, safeJsonStringify } from '@walletconnect/safe-json';
 import { Platform } from 'react-native';
-import { Chain, sepolia } from 'viem/chains';
+import { sepolia } from 'viem/chains';
 
 const storage: Storage =
   Platform.OS !== 'web'
@@ -59,26 +60,18 @@ if (!projectId) {
 
 // Mezo Testnet (Matsnet) - Chain ID: 31611
 // This is where Mezo protocol contracts are deployed
-const mezoTestnetRpcUrl =
-  process.env.EXPO_PUBLIC_MEZO_TESTNET_RPC_URL || 'https://rpc.test.mezo.org';
 
-export const mezoTestnet: AppKitNetwork = {
-  id: 'eip155:31611',
-  caipNetworkId: 'eip155:31611',
-  chainNamespace: 'eip155',
-  name: 'Mezo Testnet',
-  nativeCurrency: {
-    name: 'Bitcoin',
-    symbol: 'BTC', // Native currency on Mezo is BTC (wrapped/native)
-    decimals: 18,
-  },
-  rpcUrls: {
-    default: {
-      http: [mezoTestnetRpcUrl],
-    },
-  },
-  testnet: true,
-};
+
+
+// Create a viem chain object for WagmiAdapter
+const mezoTestnetViemChain = {
+  id: mezoTestnetChain.id,
+  name: mezoTestnetChain.name,
+  nativeCurrency: mezoTestnetChain.nativeCurrency,
+  rpcUrls: mezoTestnetChain.rpcUrls,
+  blockExplorers: mezoTestnetChain.blockExplorers,
+  testnet: mezoTestnetChain.testnet,
+} as const;
 
 // Sepolia Testnet (Chain ID: 11155111) - For Ethereum testnet support
 // const sepoliaRpcUrl =
@@ -104,7 +97,7 @@ export const mezoTestnet: AppKitNetwork = {
 
 export const wagmiAdapter = new WagmiAdapter({
   projectId,
-  networks: [mezoTestnet as Chain, sepolia], // Add all chains you want to support
+  networks: [mezoTestnetViemChain, sepolia], // Use viem chain objects for WagmiAdapter
 });
 
 const metadata = {
@@ -119,8 +112,8 @@ const metadata = {
 
 export const appKit = createAppKit({
   adapters: [wagmiAdapter], // Removed bitcoinAdapter - focusing on EVM chains
-  networks: [mezoTestnet, sepolia], // Mezo testnet (matsnet) is primary
-  defaultNetwork: mezoTestnet, // Default to Mezo testnet
+  networks: [mezoTestnetViemChain, sepolia], // Mezo testnet (matsnet) is primary
+  defaultNetwork: mezoTestnetViemChain, // Default to Mezo testnet
   projectId,
   metadata,
   storage,
