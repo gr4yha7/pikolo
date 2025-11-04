@@ -8,39 +8,17 @@
 import type { Address, PublicClient } from 'viem';
 import { createPublicClient, http } from 'viem';
 
+import { mezoTestnetChain } from '@/constants/chain';
 import PriceFeedABI from '@/lib/contracts/abis/mezo/PriceFeed.json';
 
 // Mezo Testnet (Matsnet) PriceFeed address
 const MEZO_PRICE_FEED_ADDRESS = '0x86bCF0841622a5dAC14A313a15f96A95421b9366' as Address;
 
-// Define a custom chain for Mezo testnet
-const mezoTestnetChain = {
-  id: 31611,
-  name: 'Mezo Testnet',
-  nativeCurrency: {
-    decimals: 18,
-    name: 'Bitcoin',
-    symbol: 'BTC',
-  },
-  rpcUrls: {
-    default: {
-      http: ['https://rpc.test.mezo.org'],
-    },
-  },
-  blockExplorers: {
-    default: {
-      name: 'Mezo Explorer',
-      url: 'https://explorer.test.mezo.org',
-    },
-  },
-  testnet: true,
-};
-
 /**
  * Get BTC price from Mezo PriceFeed contract
  * 
  * @param publicClient - Viem public client (optional, will create one if not provided)
- * @returns BTC price in USD (as number, e.g., 60000 for $60,000)
+ * @returns BTC price in USD (as number, e.g., 100000 for $100,000)
  */
 export async function getBTCPriceFromMezo(
   publicClient?: PublicClient,
@@ -99,9 +77,13 @@ export function determineMarketOutcome(
   isAboveThreshold: boolean = true,
 ): 'Yes' | 'No' {
   if (isAboveThreshold) {
+    // Market question: "Will BTC be above $X?"
+    // Yes if price >= threshold, No if price < threshold
     return btcPrice >= threshold ? 'Yes' : 'No';
   } else {
-    return btcPrice <= threshold ? 'No' : 'Yes';
+    // Market question: "Will BTC be below $X?"
+    // Yes if price <= threshold (BTC is below), No if price > threshold (BTC is above)
+    return btcPrice <= threshold ? 'Yes' : 'No';
   }
 }
 
