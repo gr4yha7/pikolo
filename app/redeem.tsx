@@ -1,10 +1,12 @@
 import { AppHeader } from '@/components/app-header';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
+import { mezoTestnetChain } from '@/constants/chain';
 import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
 import { usePredictionMarket } from '@/hooks/usePredictionMarket';
 import { MezoIntegrationClient } from '@/lib/contracts/MezoIntegration';
+import { formatShares } from '@/utils/format-shares';
 import { Ionicons } from '@expo/vector-icons';
 import { useAccount } from '@reown/appkit-react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -22,29 +24,6 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { createPublicClient, formatEther, formatUnits, http, type Address, type WalletClient } from 'viem';
 import { useWalletClient } from 'wagmi';
-
-// Mezo testnet chain definition
-const mezoTestnetChain = {
-  id: 31611,
-  name: 'Mezo Testnet',
-  nativeCurrency: {
-    decimals: 18,
-    name: 'Bitcoin',
-    symbol: 'BTC',
-  },
-  rpcUrls: {
-    default: {
-      http: ['https://rpc.test.mezo.org'],
-    },
-  },
-  blockExplorers: {
-    default: {
-      name: 'Mezo Explorer',
-      url: 'https://explorer.test.mezo.org',
-    },
-  },
-  testnet: true,
-};
 
 export default function RedeemScreen() {
   const params = useLocalSearchParams<{ marketAddress?: string }>();
@@ -68,15 +47,22 @@ export default function RedeemScreen() {
   const [autoRepayEnabled, setAutoRepayEnabled] = useState(false);
   const [isCheckingAutoRepay, setIsCheckingAutoRepay] = useState(false);
 
-  // Check if market is resolved
+  // Check if market is resolved or expired
   const isResolved = marketData?.status === 1;
-  const outcome = marketData?.outcome; // 0 = No, 1 = Yes
+  const expirationTime = marketData?.expirationTime ? Number(marketData.expirationTime) * 1000 : 0;
+  const isExpired = Date.now() >= expirationTime;
+  const outcome = marketData?.outcome; // 0 = No, 1 = Yes (only available if resolved)
 
-  // Determine winning shares
-  const winningShares = outcome === 1 ? userPosition?.yesShares || 0n : userPosition?.noShares || 0n;
-  const losingShares = outcome === 1 ? userPosition?.noShares || 0n : userPosition?.yesShares || 0n;
+  // Determine winning shares (if resolved) or potential winning shares (if expired but not resolved)
+  // For expired but not resolved markets, we can't determine the outcome yet, so we show all shares as potentially redeemable
+  const winningShares = isResolved 
+    ? (outcome === 1 ? userPosition?.yesShares || 0n : userPosition?.noShares || 0n)
+    : (userPosition?.yesShares || 0n) + (userPosition?.noShares || 0n); // If expired but not resolved, show all shares
+  const losingShares = isResolved
+    ? (outcome === 1 ? userPosition?.noShares || 0n : userPosition?.yesShares || 0n)
+    : 0n;
   const hasWinningShares = winningShares > 0n;
-  const isWinningSide = outcome === 1 ? 'Yes' : 'No';
+  const isWinningSide = isResolved ? (outcome === 1 ? 'Yes' : 'No') : 'Pending';
 
   // Check auto-repay status
   useEffect(() => {
@@ -118,8 +104,18 @@ export default function RedeemScreen() {
   }, [wallet.evmAddress, hasWinningShares]);
 
   const handleRedeem = async (amount: bigint | 'all' = 'all') => {
-    if (!marketAddress || !isResolved) {
-      Alert.alert('Error', 'Market must be resolved before redeeming');
+    if (!marketAddress) {
+      Alert.alert('Error', 'Market address is required');
+      return;
+    }
+    
+    if (!isResolved && !isExpired) {
+      Alert.alert('Error', 'Market must be expired or resolved before redeeming');
+      return;
+    }
+    
+    if (isExpired && !isResolved) {
+      Alert.alert('Market Pending Resolution', 'This market has expired but is awaiting resolution. Please wait for the market to be resolved before redeeming your shares.');
       return;
     }
 
@@ -144,7 +140,7 @@ export default function RedeemScreen() {
 
       Alert.alert(
         'Success',
-        `Successfully redeemed ${formatEther(sharesToRedeem)} shares! Transaction: ${result.hash.slice(0, 10)}...`,
+        `Successfully redeemed ${formatShares(sharesToRedeem)} shares! Transaction: ${result.hash.slice(0, 10)}...`,
         [
           {
             text: 'OK',
@@ -314,10 +310,7 @@ export default function RedeemScreen() {
               <View style={styles.sharesRow}>
                 <Text style={styles.sharesLabel}>{isWinningSide} Shares:</Text>
                 <Text style={styles.sharesValue}>
-                  {parseFloat(formatEther(winningShares)).toLocaleString(undefined, {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 6,
-                  })}
+                  {formatShares(winningShares)}
                 </Text>
               </View>
               <View style={styles.payoutRow}>
@@ -343,7 +336,7 @@ export default function RedeemScreen() {
             </Text>
             {losingShares > 0n && (
               <Text style={styles.losingSharesText}>
-                You have {parseFloat(formatEther(losingShares)).toFixed(2)} {outcome === 1 ? 'No' : 'Yes'} shares (losing position)
+                You have {formatShares(losingShares)} {outcome === 1 ? 'No' : 'Yes'} shares (losing position)
               </Text>
             )}
           </Card>
@@ -377,7 +370,7 @@ export default function RedeemScreen() {
         {hasWinningShares && (
           <View style={styles.buttonContainer}>
             <Button
-              title={isRedeeming ? 'Redeeming...' : `Redeem All (${parseFloat(formatEther(winningShares)).toFixed(2)} shares)`}
+              title={isRedeeming ? 'Redeeming...' : `Redeem All (${formatShares(winningShares)} shares)`}
               onPress={() => handleRedeem('all')}
               variant="primary"
               size="lg"

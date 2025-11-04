@@ -6,19 +6,20 @@ import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
 import { usePredictionMarket } from '@/hooks/usePredictionMarket';
 import { calculateSharesOut, priceToProbability } from '@/utils/amm';
+import { formatShares } from '@/utils/format-shares';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Alert,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { formatEther, formatUnits, parseEther } from 'viem';
@@ -167,8 +168,8 @@ export default function BuyScreen() {
     : 0;
 
   const shares = estimatedShares > 0n
-    ? formatEther(estimatedShares)
-    : '0';
+    ? formatShares(estimatedShares)
+    : '0.0000';
 
   if (!marketAddress) {
     return (
@@ -301,10 +302,7 @@ export default function BuyScreen() {
             </View>
           </View>
           <Text style={styles.profitText}>
-            Estimated shares: {parseFloat(shares).toLocaleString(undefined, {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 6,
-            })}
+            Estimated shares: {shares}
           </Text>
         </View>
 
@@ -330,10 +328,7 @@ export default function BuyScreen() {
             <View style={styles.infoItem}>
               <Text style={styles.infoLabel}>Estimated Shares</Text>
               <Text style={styles.infoValue}>
-                {parseFloat(shares).toLocaleString(undefined, {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 6,
-                })}
+                {shares}
               </Text>
             </View>
           </View>

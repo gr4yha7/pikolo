@@ -6,6 +6,7 @@ import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
 import { usePredictionMarket } from '@/hooks/usePredictionMarket';
 import { calculateAmountOut } from '@/utils/amm';
+import { formatShares } from '@/utils/format-shares';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -44,7 +45,7 @@ export default function SellScreen() {
   } = usePredictionMarket(marketAddress || null);
 
   const availableShares = isYes ? userPosition?.yesShares || 0n : userPosition?.noShares || 0n;
-  const availableSharesFormatted = formatEther(availableShares);
+  const availableSharesFormatted = formatShares(availableShares);
   
   const [sharesToSell, setSharesToSell] = useState('');
   const [sliderValue, setSliderValue] = useState(0);
@@ -313,10 +314,7 @@ export default function SellScreen() {
           <View style={styles.balanceContainer}>
             <Text style={styles.balanceLabel}>Available shares:</Text>
             <Text style={styles.balanceValue}>
-              {parseFloat(availableSharesFormatted).toLocaleString(undefined, {
-                minimumFractionDigits: 2,
-                maximumFractionDigits: 6,
-              })}
+              {availableSharesFormatted}
             </Text>
           </View>
         </View>
