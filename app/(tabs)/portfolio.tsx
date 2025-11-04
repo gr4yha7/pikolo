@@ -5,9 +5,11 @@ import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
 import { useMarketFactory } from '@/hooks/useMarketFactory';
 import { calculateSharePrice } from '@/utils/amm';
+import { formatShares } from '@/utils/format-shares';
+import { getMarketIsAboveThreshold } from '@/utils/market-metadata';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -35,6 +37,7 @@ type Position = {
   outcome?: 0 | 1; // 0 = No, 1 = Yes
   closedAt?: string;
   status: 'pending' | 'resolved';
+  isAboveThreshold: boolean; // Market direction: true = above threshold, false = below threshold
 };
 
 export default function PortfolioTab() {
@@ -52,39 +55,34 @@ export default function PortfolioTab() {
   
   const [positions, setPositions] = useState<Position[]>([]);
   const [isLoadingPositions, setIsLoadingPositions] = useState(false);
+  const fetchPositionsRef = useRef<(() => Promise<void>) | null>(null);
 
   // Fetch user positions from all markets
-  useEffect(() => {
-    const fetchPositions = async () => {
-      if (!wallet.evmAddress || !allMarkets || allMarkets.length === 0) {
+  const fetchPositions = useCallback(async () => {
+      if (!wallet.evmAddress || !allMarkets || allMarkets.length === 0 || marketsLoading) {
         setPositions([]);
         return;
       }
 
       setIsLoadingPositions(true);
       const userPositions: Position[] = [];
+      
+      console.log(`Fetching positions for ${allMarkets.length} markets for user ${wallet.evmAddress}`);
+
+      // Import dependencies once before the loop
+      const { PredictionMarketClient } = await import('@/lib/contracts/PredictionMarket');
+      const { createPublicClient, http } = await import('viem');
+      const { mezoTestnetChain } = await import('@/constants/chain');
+
+      const publicClient = createPublicClient({
+        chain: mezoTestnetChain,
+        transport: http('https://rpc.test.mezo.org'),
+      });
 
       for (const marketAddress of allMarkets) {
         try {
-          // We'd need to use usePredictionMarket hook, but hooks can't be called conditionally
-          // For now, we'll create a client directly
-          const { PredictionMarketClient } = await import('@/lib/contracts/PredictionMarket');
-          const { createPublicClient, http } = await import('viem');
+          console.log(`Checking market: ${marketAddress}`);
           
-          const mezoTestnetChain = {
-            id: 31611,
-            name: 'Mezo Testnet',
-            nativeCurrency: { decimals: 18, name: 'Bitcoin', symbol: 'BTC' },
-            rpcUrls: { default: { http: ['https://rpc.test.mezo.org'] } },
-            blockExplorers: { default: { name: 'Mezo Explorer', url: 'https://explorer.test.mezo.org' } },
-            testnet: true,
-          };
-
-          const publicClient = createPublicClient({
-            chain: mezoTestnetChain,
-            transport: http('https://rpc.test.mezo.org'),
-          });
-
           const marketClient = new PredictionMarketClient(
             marketAddress,
             publicClient,
@@ -97,10 +95,16 @@ export default function PortfolioTab() {
             marketClient.getUserPosition(wallet.evmAddress as Address),
           ]);
 
+          console.log(`Market ${marketAddress}: YesShares=${userPosition.yesShares}, NoShares=${userPosition.noShares}, Status=${marketData.status}`);
+
           // Check if user has any shares
           if (userPosition.yesShares > 0n || userPosition.noShares > 0n) {
+            console.log(`Found position in market ${marketAddress}: Yes=${userPosition.yesShares}, No=${userPosition.noShares}`);
             const threshold = formatUnits(marketData.threshold, 18);
             const isResolved = marketData.status === 1; // Resolved status
+            
+            // Get market direction from metadata (defaults to true if not found)
+            const isAboveThreshold = await getMarketIsAboveThreshold(marketAddress);
             
             // Calculate current value and P&L
             if (userPosition.yesShares > 0n) {
@@ -126,6 +130,7 @@ export default function PortfolioTab() {
                 closedAt: isResolved
                   ? new Date(Number(marketData.expirationTime) * 1000).toLocaleDateString()
                   : undefined,
+                isAboveThreshold,
               });
             }
 
@@ -152,30 +157,64 @@ export default function PortfolioTab() {
                 closedAt: isResolved
                   ? new Date(Number(marketData.expirationTime) * 1000).toLocaleDateString()
                   : undefined,
+                isAboveThreshold,
               });
             }
           }
         } catch (error) {
           console.error(`Error fetching position for market ${marketAddress}:`, error);
+          // Log more details about the error
+          if (error instanceof Error) {
+            console.error(`Error message: ${error.message}`);
+            console.error(`Error stack: ${error.stack}`);
+          }
         }
       }
 
+      console.log(`Total positions found: ${userPositions.length}`);
       setPositions(userPositions);
       setIsLoadingPositions(false);
-    };
+  }, [wallet.evmAddress, allMarkets, marketsLoading]);
 
-    if (wallet.evmAddress && allMarkets && allMarkets.length > 0) {
+  // Store fetchPositions in ref for useFocusEffect
+  useEffect(() => {
+    fetchPositionsRef.current = fetchPositions;
+  }, [fetchPositions]);
+
+  // Fetch positions when dependencies change
+  useEffect(() => {
+    // Only fetch if conditions are met
+    if (wallet.evmAddress && allMarkets && allMarkets.length > 0 && !marketsLoading) {
+      console.log('Conditions met, fetching positions...');
       fetchPositions();
     } else {
+      console.log('Conditions not met:', {
+        hasAddress: !!wallet.evmAddress,
+        hasMarkets: !!allMarkets,
+        marketsCount: allMarkets?.length || 0,
+        isLoading: marketsLoading,
+      });
       setPositions([]);
     }
-  }, [wallet.evmAddress, allMarkets]);
+  }, [wallet.evmAddress, allMarkets, marketsLoading, fetchPositions]);
+
+  // Refresh positions when screen comes into focus (e.g., after redeeming)
+  useFocusEffect(
+    useCallback(() => {
+      if (fetchPositionsRef.current && wallet.evmAddress && allMarkets && allMarkets.length > 0 && !marketsLoading) {
+        fetchPositionsRef.current();
+      }
+    }, [wallet.evmAddress, allMarkets, marketsLoading]),
+  );
 
   // Filter positions by section
   const filteredPositions = useMemo(() => {
-    return positions.filter((pos) =>
-      activeSection === 'open' ? pos.status === 'pending' : pos.status === 'resolved'
-    );
+    return positions.filter((pos) => {
+      // Only show positions with shares > 0
+      if (pos.shares === 0n) return false;
+      // Filter by status
+      return activeSection === 'open' ? pos.status === 'pending' : pos.status === 'resolved';
+    });
   }, [positions, activeSection]);
 
   // Calculate totals
@@ -206,49 +245,26 @@ export default function PortfolioTab() {
           
           {/* Decorative Icons */}
           <View style={styles.decorativeIcons}>
-            <Ionicons name="heart-outline" size={32} color={DesignColors.light.white} style={styles.decorativeIcon} />
-            <Ionicons name="eye-outline" size={32} color={DesignColors.light.white} style={styles.decorativeIcon} />
-            <View style={[styles.decorativeIcon, styles.decorativeCircle]}>
-              <Ionicons name="ellipse" size={24} color={DesignColors.yellow.primary} />
-            </View>
-            <Ionicons name="stats-chart" size={32} color={DesignColors.yellow.primary} style={styles.decorativeIcon} />
+            <Ionicons name="stats-chart-outline" size={64} color={DesignColors.yellow.primary} style={styles.decorativeIcon} />
+          </View>
+
+          {/* Empty State Content */}
+          <View style={styles.emptyStateContainer}>
+            <Text style={styles.emptyStateTitle}>Connect Your Wallet</Text>
+            <Text style={styles.emptyStateText}>
+              Connect your wallet to view your open positions, track your performance, and manage your predictions.
+            </Text>
           </View>
 
           {/* Connect Wallet Button */}
           <Button
             title="Connect Wallet"
-            onPress={connectWallet}
+            onPress={() => connectWallet('evm')}
             variant="primary"
             size="lg"
             style={styles.connectWalletButton}
+            leftIcon={<Ionicons name="wallet" size={20} color={DesignColors.dark.primary} />}
           />
-
-          {/* Tabs (inactive state) */}
-          <View style={styles.tabsContainer}>
-            <View style={[styles.tab, styles.inactiveTab]}>
-              <Text style={styles.inactiveTabText}>Open</Text>
-            </View>
-            <View style={[styles.tab, styles.inactiveTab]}>
-              <Text style={styles.inactiveTabText}>Closed</Text>
-            </View>
-          </View>
-
-          {/* Call to Action Text */}
-          <Text style={styles.ctaText}>
-            Connect wallet, get 500 coins, make your first prediction
-          </Text>
-
-          {/* Bottom Decorative Elements */}
-          <View style={styles.bottomDecorations}>
-            <View style={styles.gameController}>
-              <Ionicons name="game-controller-outline" size={40} color={DesignColors.light.white} />
-              <View style={styles.controllerScreen}>
-                <Ionicons name="trending-up" size={20} color={DesignColors.yellow.primary} />
-              </View>
-            </View>
-            <Ionicons name="diamond" size={32} color={DesignColors.yellow.primary} style={styles.coinIcon} />
-            <Ionicons name="arrow-up-circle" size={40} color={DesignColors.purple.primary} style={styles.arrowIcon} />
-          </View>
         </ScrollView>
       </SafeAreaView>
     );
@@ -268,15 +284,22 @@ export default function PortfolioTab() {
           <View style={[styles.metricItem, styles.gradientCard]}>
             <Text style={styles.metricLabel}>In positions</Text>
             <View style={styles.metricValueRow}>
-              <Text style={styles.metricValue}>{inPositions.toLocaleString()}</Text>
+              <Text style={styles.metricValue}>${inPositions.toLocaleString()}</Text>
               <View style={styles.coinIconContainer}>
                 <Ionicons name="diamond" size={20} color={DesignColors.yellow.primary} />
               </View>
             </View>
             <View style={styles.metricChange}>
-              <Ionicons name="arrow-up" size={16} color={DesignColors.success} />
-              <Text style={[styles.metricChangeText, { color: DesignColors.success }]}>
-                +{totalChangePercent}% ({totalChange.toFixed(2)})
+              <Ionicons 
+                name={totalChange >= 0 ? "arrow-up" : "arrow-down"} 
+                size={16} 
+                color={totalChange >= 0 ? DesignColors.success : DesignColors.error}
+              />
+              <Text style={[
+                styles.metricChangeText, 
+                { color: totalChange >= 0 ? DesignColors.success : DesignColors.error }
+              ]}>
+                {totalChangePercent >= 0 ? '+' : ''}{totalChangePercent.toFixed(2)}% (${totalChange >= 0 ? '+' : ''}{totalChange.toFixed(2)})
               </Text>
             </View>
           </View>
@@ -359,7 +382,7 @@ export default function PortfolioTab() {
                 <Text style={styles.closedLabel}>Closed</Text>
               </View>
             )}
-            <View style={styles.positionHeader}>
+            {/* <View style={styles.positionHeader}>
               <TouchableOpacity style={styles.bookmarkButton}>
                 <Ionicons
                   name="bookmark-outline"
@@ -374,14 +397,14 @@ export default function PortfolioTab() {
                   color={DesignColors.light.white}
                 />
               </TouchableOpacity>
-            </View>
+            </View> */}
             <View style={styles.positionContent}>
               <View style={styles.bitcoinIconContainer}>
                 <Text style={styles.bitcoinSymbol}>₿</Text>
               </View>
               <View style={styles.positionInfo}>
                 <Text style={styles.positionQuestion}>
-                  Will BTC be {position.choice === 'Yes' ? 'above' : 'below'} ${position.threshold}?
+                  Will BTC be {position.isAboveThreshold ? 'above' : 'below'} ${position.threshold}?
                 </Text>
                 <View style={styles.positionDetails}>
                   <TouchableOpacity 
@@ -398,10 +421,7 @@ export default function PortfolioTab() {
                     </Text>
                   </TouchableOpacity>
                   <Text style={styles.positionShares}>
-                    {parseFloat(formatEther(position.shares)).toLocaleString(undefined, {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 6,
-                    })} shares
+                    {formatShares(position.shares)} shares
                   </Text>
                 </View>
                 <View style={styles.positionValueRow}>
@@ -430,6 +450,22 @@ export default function PortfolioTab() {
                     <Text style={styles.closedTime}>Closed {position.closedAt}</Text>
                   )}
                 </View>
+                {/* Redeem button for resolved positions with winning shares */}
+                {position.isResolved && 
+                 position.outcome !== undefined && 
+                 position.shares > 0n &&
+                 ((position.outcome === 1 && position.choice === 'Yes') || 
+                  (position.outcome === 0 && position.choice === 'No')) && (
+                  <View style={styles.redeemButtonContainer}>
+                    <Button
+                      title="Redeem Winnings"
+                      onPress={() => router.push(`/redeem?marketAddress=${position.marketAddress}` as any)}
+                      variant="primary"
+                      size="sm"
+                      style={styles.redeemButton}
+                    />
+                  </View>
+                )}
               </View>
             </View>
           </Card>
@@ -467,13 +503,25 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xxl,
   },
   decorativeIcon: {
-    opacity: 0.6,
+    opacity: 0.8,
   },
-  decorativeCircle: {
-    width: 32,
-    height: 32,
+  emptyStateContainer: {
     alignItems: 'center',
-    justifyContent: 'center',
+    marginBottom: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+  },
+  emptyStateTitle: {
+    color: DesignColors.light.white,
+    fontSize: Typography.heading.lg.fontSize,
+    fontWeight: 'bold',
+    marginBottom: Spacing.sm,
+    textAlign: 'center',
+  },
+  emptyStateText: {
+    color: DesignColors.dark.muted,
+    fontSize: Typography.body.md.fontSize,
+    textAlign: 'center',
+    lineHeight: 24,
   },
   connectWalletButton: {
     width: '100%',
@@ -713,6 +761,15 @@ const styles = StyleSheet.create({
     color: DesignColors.dark.muted,
     fontSize: Typography.caption.md.fontSize,
     marginTop: Spacing.xs,
+  },
+  redeemButtonContainer: {
+    marginTop: Spacing.md,
+    paddingTop: Spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: DesignColors.dark.secondary,
+  },
+  redeemButton: {
+    width: '100%',
   },
   loadingContainer: {
     padding: Spacing.xl,
