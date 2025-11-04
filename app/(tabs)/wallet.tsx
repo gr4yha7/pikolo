@@ -55,12 +55,30 @@ export default function WalletTab() {
     fetchBTCPrice();
   }, [mezoClient, wallet.evmAddress, wallet.isConnected]);
 
+  const handleResetOnboarding = async () => {
+    try {
+      await resetOnboarding();
+      Alert.alert('Success', 'Onboarding reset. Please restart the app to see onboarding again.');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to reset onboarding');
+      console.error('Error resetting onboarding:', error);
+    }
+  };
+
   // Show connect wallet screen if not connected
   if (!wallet.isConnected) {
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" />
-        <AppHeader title="Wallet" showClose={false} />
+        <AppHeader title="Wallet" showClose={false} rightActions={
+          <Button
+            title=""
+            onPress={handleResetOnboarding}
+            variant="outline"
+            size="sm"
+            style={styles.debugButton}
+            leftIcon={<Ionicons name="refresh" size={16} color={DesignColors.dark.muted} />}
+          />} />
         <ScrollView
           style={styles.scrollView}
           contentContainerStyle={styles.connectWalletContent}
@@ -108,32 +126,12 @@ export default function WalletTab() {
   const changePercent = 0; // TODO: Implement historical balance tracking for accurate change calculation
   const changeAmount = 0; // TODO: Calculate from stored historical balance data
 
-  const handleResetOnboarding = async () => {
-    try {
-      await resetOnboarding();
-      Alert.alert('Success', 'Onboarding reset. Please restart the app to see onboarding again.');
-    } catch (error) {
-      Alert.alert('Error', 'Failed to reset onboarding');
-      console.error('Error resetting onboarding:', error);
-    }
-  };
-
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
       <AppHeader 
         title="Wallet" 
         showClose={false}
-        rightActions={
-          <Button
-            title=""
-            onPress={handleResetOnboarding}
-            variant="outline"
-            size="sm"
-            style={styles.debugButton}
-            leftIcon={<Ionicons name="refresh" size={16} color={DesignColors.dark.muted} />}
-          />
-        }
       />
       <ScrollView
         style={styles.scrollView}
