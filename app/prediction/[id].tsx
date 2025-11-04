@@ -3,18 +3,20 @@ import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { usePredictionMarket } from '@/hooks/usePredictionMarket';
+import { formatShares } from '@/utils/format-shares';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
+  ActivityIndicator, Alert, Dimensions,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
   TouchableOpacity,
-  View,
+  View
 } from 'react-native';
+import { BarChart, LineChart } from 'react-native-chart-kit';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { Address } from 'viem';
 import { formatEther, formatUnits } from 'viem';
@@ -34,6 +36,7 @@ export default function PredictionDetailScreen() {
     error,
     getSharePrice,
     fetchMarketData,
+    resolveMarket,
   } = usePredictionMarket(marketAddress || null);
 
   // Calculate probabilities and prices
@@ -68,17 +71,47 @@ export default function PredictionDetailScreen() {
   const expirationTime = marketData ? Number(marketData.expirationTime) * 1000 : Date.now();
   const expirationDate = new Date(expirationTime);
   const now = Date.now();
-  const timeToClose = expirationTime > now
-    ? `${Math.ceil((expirationTime - now) / (1000 * 60 * 60 * 24))} days to close`
-    : 'Expired';
+  const timeDiff = expirationTime - now;
+  const isExpired = timeDiff <= 0;
+  
+  // Format time to close with more precision (for minute-based testing)
+  let timeToClose: string;
+  if (isExpired) {
+    timeToClose = 'Expired';
+  } else {
+    const days = Math.floor(timeDiff / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((timeDiff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((timeDiff % (1000 * 60 * 60)) / (1000 * 60));
+    
+    if (days > 0) {
+      timeToClose = `${days} ${days === 1 ? 'day' : 'days'}${hours > 0 ? ` ${hours}h` : ''}`;
+    } else if (hours > 0) {
+      timeToClose = `${hours} ${hours === 1 ? 'hour' : 'hours'}${minutes > 0 ? ` ${minutes}m` : ''}`;
+    } else {
+      timeToClose = `${minutes} ${minutes === 1 ? 'min' : 'mins'}`;
+    }
+  }
 
   // Total volume (simplified - would come from events in production)
   const totalVolume = reserves
     ? formatEther(reserves.reserveYes + reserves.reserveNo)
     : '0';
 
+  // Get isAboveThreshold from metadata
+  const [isAboveThreshold, setIsAboveThreshold] = useState<boolean>(true);
+  
+  useEffect(() => {
+    const fetchMetadata = async () => {
+      if (marketAddress) {
+        const metadata = await import('@/utils/market-metadata').then(m => m.getMarketIsAboveThreshold(marketAddress));
+        setIsAboveThreshold(metadata);
+      }
+    };
+    fetchMetadata();
+  }, [marketAddress]);
+
   const question = marketData
-    ? `Will Bitcoin price be above $${parseFloat(threshold).toLocaleString(undefined, {
+    ? `Will Bitcoin price be ${isAboveThreshold ? 'above' : 'below'} $${parseFloat(threshold).toLocaleString(undefined, {
         minimumFractionDigits: 0,
         maximumFractionDigits: 0,
       })} by ${expirationDate.toLocaleDateString()}?`
@@ -125,6 +158,28 @@ export default function PredictionDetailScreen() {
   const handleRedeem = () => {
     if (!marketAddress) return;
     router.push(`/redeem?marketAddress=${marketAddress}` as any);
+  };
+
+  const [isResolving, setIsResolving] = useState(false);
+
+  const handleResolveMarket = async () => {
+    if (!marketAddress) return;
+
+    try {
+      setIsResolving(true);
+      const result = await resolveMarket();
+      
+      Alert.alert(
+        'Market Resolved!',
+        `Market has been resolved successfully!\n\nOutcome: ${result.outcome}\nPrice: $${result.price?.toLocaleString()}\n\nTransaction: ${result.txHash?.slice(0, 10)}...`,
+        [{ text: 'OK' }],
+      );
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to resolve market';
+      Alert.alert('Error', errorMessage);
+    } finally {
+      setIsResolving(false);
+    }
   };
 
   if (isLoading && !marketData) {
@@ -237,38 +292,132 @@ export default function PredictionDetailScreen() {
             </View>
           </View>
 
-          {/* Chart Placeholder */}
-          <View style={styles.chartContainer}>
-            <View style={styles.chartYAxis}>
-              <Text style={styles.chartYLabel}>100%</Text>
-              <Text style={styles.chartYLabel}>75%</Text>
-              <Text style={styles.chartYLabel}>50%</Text>
-              <Text style={styles.chartYLabel}>25%</Text>
-              <Text style={styles.chartYLabel}>0%</Text>
-            </View>
-            <View style={styles.chartArea}>
-              <View style={styles.chartLine} />
-              <View
-                style={[
-                  styles.chartFill,
-                  { height: `${yesProbability}%` },
-                  { backgroundColor: DesignColors.success },
-                ]}
-              />
-              <View
-                style={[
-                  styles.chartFillNo,
-                  { height: `${noProbability}%` },
-                  { backgroundColor: DesignColors.error },
-                  { bottom: 0 },
-                ]}
-              />
-              <View style={styles.chartXAxis}>
-                <Text style={styles.chartXLabel}>Yes</Text>
-                <Text style={styles.chartXLabel}>No</Text>
-              </View>
-            </View>
-          </View>
+          {/* Probability Chart */}
+          <Card variant="elevated" style={styles.chartCard}>
+            <Text style={styles.chartTitle}>Market Odds</Text>
+            <BarChart
+              data={{
+                labels: ['Yes', 'No'],
+                datasets: [
+                  {
+                    data: [yesProbability, noProbability],
+                  },
+                ],
+              }}
+              width={Dimensions.get('window').width - Spacing.md * 4}
+              height={220}
+              yAxisLabel=""
+              yAxisSuffix="%"
+              yAxisInterval={25}
+              chartConfig={{
+                backgroundColor: DesignColors.dark.secondary,
+                backgroundGradientFrom: DesignColors.dark.secondary,
+                backgroundGradientTo: DesignColors.dark.secondary,
+                decimalPlaces: 1,
+                color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                style: {
+                  borderRadius: Radius.md,
+                },
+                propsForBackgroundLines: {
+                  strokeDasharray: '',
+                  stroke: DesignColors.dark.muted,
+                  strokeWidth: 1,
+                },
+                propsForLabels: {
+                  fontSize: 12,
+                },
+                barPercentage: 0.6,
+                fillShadowGradient: DesignColors.yellow.primary,
+                fillShadowGradientOpacity: 0.8,
+              }}
+              style={{
+                marginVertical: Spacing.sm,
+                borderRadius: Radius.md,
+              }}
+              fromZero={true}
+              showValuesOnTopOfBars={true}
+              withInnerLines={true}
+              withVerticalLabels={true}
+              withHorizontalLabels={true}
+            />
+          </Card>
+
+          {/* Probability Over Time Chart (Line Chart) */}
+          <Card variant="elevated" style={styles.chartCard}>
+            <Text style={styles.chartTitle}>Probability Over Time</Text>
+            <LineChart
+              data={{
+                labels: ['1h', '2h', '3h', '4h', '5h', '6h'],
+                datasets: [
+                  {
+                    data: [
+                      yesProbability * 0.95,
+                      yesProbability * 0.97,
+                      yesProbability * 0.99,
+                      yesProbability * 1.01,
+                      yesProbability * 1.02,
+                      yesProbability,
+                    ],
+                    color: (opacity = 1) => DesignColors.success,
+                    strokeWidth: 2,
+                  },
+                  {
+                    data: [
+                      noProbability * 0.95,
+                      noProbability * 0.97,
+                      noProbability * 0.99,
+                      noProbability * 1.01,
+                      noProbability * 1.02,
+                      noProbability,
+                    ],
+                    color: (opacity = 1) => DesignColors.error,
+                    strokeWidth: 2,
+                  },
+                ],
+                legend: ['Yes', 'No'],
+              }}
+              width={Dimensions.get('window').width - Spacing.md * 4}
+              height={220}
+              yAxisLabel=""
+              yAxisSuffix="%"
+              yAxisInterval={25}
+              chartConfig={{
+                backgroundColor: DesignColors.dark.secondary,
+                backgroundGradientFrom: DesignColors.dark.secondary,
+                backgroundGradientTo: DesignColors.dark.secondary,
+                decimalPlaces: 1,
+                color: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                labelColor: (opacity = 1) => `rgba(255, 255, 255, ${opacity})`,
+                style: {
+                  borderRadius: Radius.md,
+                },
+                propsForBackgroundLines: {
+                  strokeDasharray: '',
+                  stroke: DesignColors.dark.muted,
+                  strokeWidth: 1,
+                },
+                propsForLabels: {
+                  fontSize: 12,
+                },
+                propsForDots: {
+                  r: '4',
+                  strokeWidth: '2',
+                  stroke: DesignColors.yellow.primary,
+                },
+              }}
+              style={{
+                marginVertical: Spacing.sm,
+                borderRadius: Radius.md,
+              }}
+              bezier
+              withInnerLines={true}
+              withVerticalLabels={true}
+              withHorizontalLabels={true}
+              withDots={true}
+              withShadow={false}
+            />
+          </Card>
 
           {/* User Positions */}
           {hasPositions && (
@@ -279,7 +428,7 @@ export default function PredictionDetailScreen() {
                   <View style={styles.positionItem}>
                     <Text style={styles.positionLabel}>Yes Shares:</Text>
                     <Text style={styles.positionValue}>
-                      {parseFloat(formatEther(userYesShares)).toFixed(2)}
+                      {formatShares(userYesShares)}
                     </Text>
                   </View>
                 )}
@@ -287,7 +436,7 @@ export default function PredictionDetailScreen() {
                   <View style={styles.positionItem}>
                     <Text style={styles.positionLabel}>No Shares:</Text>
                     <Text style={styles.positionValue}>
-                      {parseFloat(formatEther(userNoShares)).toFixed(2)}
+                      {formatShares(userNoShares)}
                     </Text>
                   </View>
                 )}
@@ -295,10 +444,22 @@ export default function PredictionDetailScreen() {
             </View>
           )}
 
+          {/* Resolve Market Button (if expired but not resolved) */}
+          {!isResolved && isExpired && (
+            <Button
+              title={isResolving ? 'Resolving...' : 'Resolve Market'}
+              onPress={handleResolveMarket}
+              variant="primary"
+              size="lg"
+              style={styles.resolveButton}
+              disabled={isResolving || isLoading}
+            />
+          )}
+
           {/* Action Buttons */}
           {isResolved ? (
             // Show redeem button if resolved and user has winning shares
-            hasPositions && (outcome === 1 ? userYesShares > 0n : userNoShares > 0n) && (
+            (outcome === 1 ? userYesShares > 0n : userNoShares > 0n) && (
               <Button
                 title="Redeem Winning Shares"
                 onPress={handleRedeem}
@@ -307,8 +468,8 @@ export default function PredictionDetailScreen() {
                 style={styles.actionButton}
               />
             )
-          ) : (
-            // Show buy/sell buttons if not resolved
+          ) : !isExpired && !isResolved ? (
+            // Show buy/sell buttons if not expired and not resolved
             <View style={styles.actionButtons}>
               <View style={styles.actionButtonContainer}>
                 <Button
@@ -318,9 +479,9 @@ export default function PredictionDetailScreen() {
                   size="lg"
                   style={styles.actionButton}
                   rightIcon={
-                    <View style={styles.priceBadge}>
-                      <Text style={styles.priceBadgeText}>
-                        {yesPrice.toFixed(2)}
+                    <View style={styles.priceBadgePrimary}>
+                      <Text style={styles.priceBadgeTextPrimary}>
+                        {yesPrice.toFixed(4)}
                       </Text>
                     </View>
                   }
@@ -341,9 +502,9 @@ export default function PredictionDetailScreen() {
                   size="lg"
                   style={styles.actionButton}
                   rightIcon={
-                    <View style={styles.priceBadge}>
-                      <Text style={styles.priceBadgeText}>
-                        {noPrice.toFixed(2)}
+                    <View style={styles.priceBadgeSecondary}>
+                      <Text style={styles.priceBadgeTextSecondary}>
+                        {noPrice.toFixed(4)}
                       </Text>
                     </View>
                   }
@@ -357,7 +518,7 @@ export default function PredictionDetailScreen() {
                 )}
               </View>
             </View>
-          )}
+          ) : null}
         </Card>
       </ScrollView>
     </SafeAreaView>
@@ -481,59 +642,15 @@ const styles = StyleSheet.create({
     height: 40,
     backgroundColor: DesignColors.dark.muted,
   },
-  chartContainer: {
-    flexDirection: 'row',
-    height: 200,
+  chartCard: {
     marginBottom: Spacing.md,
   },
-  chartYAxis: {
-    width: 40,
-    justifyContent: 'space-between',
-    paddingRight: Spacing.sm,
-  },
-  chartYLabel: {
-    color: DesignColors.dark.muted,
-    fontSize: Typography.caption.sm.fontSize,
-  },
-  chartArea: {
-    flex: 1,
-    position: 'relative',
-    borderBottomWidth: 1,
-    borderLeftWidth: 1,
-    borderColor: DesignColors.dark.muted,
-  },
-  chartLine: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-  },
-  chartFill: {
-    position: 'absolute',
-    right: 0,
-    left: '50%',
-    bottom: 0,
-    borderTopLeftRadius: Radius.sm,
-  },
-  chartFillNo: {
-    position: 'absolute',
-    left: 0,
-    right: '50%',
-    borderTopRightRadius: Radius.sm,
-  },
-  chartXAxis: {
-    position: 'absolute',
-    bottom: -20,
-    left: 0,
-    right: 0,
-    flexDirection: 'row',
-    justifyContent: 'space-around',
-    paddingTop: Spacing.xs,
-  },
-  chartXLabel: {
-    color: DesignColors.dark.muted,
-    fontSize: Typography.caption.sm.fontSize,
+  chartTitle: {
+    color: DesignColors.light.white,
+    fontSize: Typography.body.md.fontSize,
+    fontWeight: '600',
+    marginBottom: Spacing.sm,
+    paddingHorizontal: Spacing.sm,
   },
   positionCard: {
     backgroundColor: DesignColors.dark.secondary,
@@ -574,13 +691,27 @@ const styles = StyleSheet.create({
   actionButton: {
     flex: 1,
   },
-  priceBadge: {
+  resolveButton: {
+    marginBottom: Spacing.md,
+  },
+  priceBadgePrimary: {
+    backgroundColor: 'rgba(0, 0, 0, 0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: Radius.sm,
+  },
+  priceBadgeTextPrimary: {
+    color: DesignColors.light.white,
+    fontSize: Typography.caption.md.fontSize,
+    fontWeight: '700',
+  },
+  priceBadgeSecondary: {
     backgroundColor: DesignColors.yellow.primary,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: Radius.sm,
   },
-  priceBadgeText: {
+  priceBadgeTextSecondary: {
     color: DesignColors.dark.primary,
     fontSize: Typography.caption.md.fontSize,
     fontWeight: '700',

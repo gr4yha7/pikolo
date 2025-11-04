@@ -3,11 +3,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React from 'react';
 import {
-    Image,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View,
+  Image,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
 } from 'react-native';
 import { Card } from './ui/card';
 
@@ -80,32 +80,29 @@ export function PredictionCard({
         </View>
         <View style={styles.headerCenter}>
           <Ionicons
-            name="volume-high-outline"
+            name="cash-outline"
             size={16}
             color={DesignColors.light.white}
           />
           <Text style={styles.headerText}>{volume}</Text>
         </View>
-        <TouchableOpacity 
-          onPress={handleButtonPress(onSharePress)} 
-          activeOpacity={0.7}>
-          <Ionicons
-            name="share-outline"
-            size={20}
-            color={DesignColors.light.white}
-          />
-        </TouchableOpacity>
       </View>
 
       {/* Content */}
       <View style={styles.content}>
-        {image && (
-          <Image
-            source={typeof image === 'string' ? { uri: image } : image}
-            style={styles.image}
-            resizeMode="cover"
-          />
-        )}
+        <View style={styles.imageContainer}>
+          {image ? (
+            <Image
+              source={typeof image === 'string' ? { uri: image } : image}
+              style={styles.image}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.bitcoinLogoContainer}>
+              <Ionicons name="logo-bitcoin" size={28} color="#F7931A" />
+            </View>
+          )}
+        </View>
         <View style={styles.questionContainer}>
           <Text style={styles.question}>{question}</Text>
           {prediction && (
@@ -154,7 +151,9 @@ export function PredictionCard({
               size={12}
               color={DesignColors.dark.primary}
             />
-            <Text style={styles.priceText}>{yesPrice || '5'}</Text>
+            <Text style={styles.priceText}>
+              {yesPrice !== undefined ? yesPrice.toFixed(4) : '0.5000'}
+            </Text>
           </View>
         </TouchableOpacity>
         <TouchableOpacity
@@ -168,7 +167,9 @@ export function PredictionCard({
               size={12}
               color={DesignColors.dark.primary}
             />
-            <Text style={styles.priceText}>{noPrice || '4'}</Text>
+            <Text style={styles.priceText}>
+              {noPrice !== undefined ? noPrice.toFixed(4) : '0.5000'}
+            </Text>
           </View>
         </TouchableOpacity>
       </View>
@@ -207,11 +208,27 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.sm,
     gap: Spacing.md,
   },
-  image: {
+  imageContainer: {
     width: 48,
     height: 48,
     borderRadius: Radius.full,
     backgroundColor: DesignColors.dark.secondary,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  image: {
+    width: 48,
+    height: 48,
+    borderRadius: Radius.full,
+  },
+  bitcoinLogoContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: Radius.full,
+    backgroundColor: 'rgba(247, 147, 26, 0.1)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   questionContainer: {
     flex: 1,
