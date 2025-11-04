@@ -1,11 +1,11 @@
-import { useAppKit } from '@reown/appkit-react-native';
+import { useAccount, useAppKit } from '@reown/appkit-react-native';
 
 import { useAppDispatch } from '@/hooks/useAppDispatch';
 import { useAppSelector } from '@/hooks/useAppSelector';
 // Note: Bitcoin wallet connection removed - Mezo uses EVM-compatible chain
 // BTC is the native currency on Mezo network, so we get BTC balance via native currency
 // import { connectBitcoinWallet, getBitcoinBalance } from '@/lib/wallet/bitcoin';
-import { connectEVMWallet, getEVMBalance, getTokenBalance } from '@/lib/wallet/evm';
+import { getEVMBalance, getTokenBalance } from '@/lib/wallet/evm';
 import {
   // connectBitcoin, // Removed - no separate Bitcoin wallet
   connectEVM,
@@ -18,7 +18,8 @@ import {
   updateMUSDBalance,
 } from '@/store/slices/walletSlice';
 import { formatAddress as formatAddressUtil } from '@/utils/formatting';
-import React, { createContext, ReactNode, useContext, useEffect } from 'react';
+import React, { createContext, ReactNode, useCallback, useContext, useEffect } from 'react';
+import type { Address } from 'viem';
 
 interface WalletContextType {
   wallet: {
@@ -42,7 +43,8 @@ const WalletContext = createContext<WalletContextType | undefined>(undefined);
 export function WalletProvider({ children }: { children: ReactNode }) {
   const dispatch = useAppDispatch();
   const walletState = useAppSelector((state) => state.wallet);
-  const { open } = useAppKit();
+  const { open, disconnect: disconnectAppKit } = useAppKit();
+  const { address, isConnected, chainId } = useAccount();
 
   // Load wallet state from AsyncStorage on mount
   useEffect(() => {
@@ -55,67 +57,18 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     loadState();
   }, [dispatch]);
 
-  const connectWallet = async (type: 'evm' = 'evm') => {
+  const refreshBalances = useCallback(async () => {
     try {
-      dispatch(setLoading(true));
-      dispatch(setError(null));
-
-      // Connect EVM wallet (Mezo testnet uses EVM-compatible chain)
-      const evmWallet = await connectEVMWallet(
-        open as (options?: {
-          view?: 'Account' | 'Connect' | 'WalletConnect' | 'Networks' | 'Swap' | 'OnRamp';
-        }) => void,
-      );
-
-      // Get native balance (BTC on Mezo network)
-      const balance = await getEVMBalance(evmWallet.address, evmWallet.chainId);
-
-      dispatch(
-        connectEVM({
-          address: evmWallet.address,
-          balance,
-        }),
-      );
-
-      // Fetch MUSD token balance
-      const musdAddress =
-        process.env.EXPO_PUBLIC_MEZO_MUSD_ADDRESS ||
-        '0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503'; // Default to Matsnet address
-      if (musdAddress) {
-        try {
-          const musdBalance = await getTokenBalance(
-            evmWallet.address,
-            musdAddress as `0x${string}`,
-            evmWallet.chainId,
-          );
-          dispatch(updateMUSDBalance(musdBalance));
-        } catch (error) {
-          console.error('Error fetching MUSD balance:', error);
-        }
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Failed to connect wallet';
-      dispatch(setError(errorMessage));
-      throw error;
-    }
-  };
-
-  const disconnectWallet = () => {
-    dispatch(disconnect());
-  };
-
-  const formatAddress = (address: string | null) => {
-    return formatAddressUtil(address);
-  };
-
-  const refreshBalances = async () => {
-    try {
-      // On Mezo, BTC is the native currency, so we get it via EVM balance
-      if (walletState.evmAddress && walletState.evmAddress.startsWith('0x')) {
-        const evmAddress = walletState.evmAddress as `0x${string}`;
+      // Use current connected address from AppKit, or fall back to wallet state
+      const currentAddress = address || walletState.evmAddress;
+      
+      if (currentAddress && typeof currentAddress === 'string' && currentAddress.startsWith('0x')) {
+        const evmAddress = currentAddress as `0x${string}`;
+        // Ensure chainId is a number
+        const currentChainId = typeof chainId === 'number' ? chainId : 31611; // Default to Mezo testnet
         
         // Get native BTC balance (native currency on Mezo network)
-        const evmBalance = await getEVMBalance(evmAddress);
+        const evmBalance = await getEVMBalance(evmAddress, currentChainId);
         dispatch(updateEVMBalance(evmBalance));
 
         // Refresh MUSD token balance
@@ -127,16 +80,81 @@ export function WalletProvider({ children }: { children: ReactNode }) {
             const musdBalance = await getTokenBalance(
               evmAddress,
               musdAddress as `0x${string}`,
+              currentChainId,
             );
             dispatch(updateMUSDBalance(musdBalance));
           } catch (error) {
             console.error('Error refreshing MUSD balance:', error);
           }
         }
+        
+        dispatch(setLoading(false));
       }
     } catch (error) {
       console.error('Error refreshing balances:', error);
+      dispatch(setLoading(false));
     }
+  }, [address, chainId, walletState.evmAddress, dispatch]);
+
+  // Listen to AppKit connection events and update wallet state
+  useEffect(() => {
+    if (isConnected && address) {
+      // Wallet connected - update state only if not already connected with this address
+      if (!walletState.isConnected || walletState.evmAddress !== address) {
+        dispatch(setLoading(true));
+        dispatch(
+          connectEVM({
+            address: address as Address,
+            balance: walletState.evmBalance || '0', // Will be updated by refreshBalances
+          }),
+        );
+
+        // Fetch balances
+        refreshBalances();
+      }
+    } else if (!isConnected && walletState.isConnected) {
+      // Wallet disconnected - clear state
+      dispatch(disconnect());
+    }
+  }, [isConnected, address, walletState.isConnected, walletState.evmAddress, refreshBalances, dispatch]);
+
+  const connectWallet = useCallback(async (type: 'evm' = 'evm') => {
+    try {
+      dispatch(setLoading(true));
+      dispatch(setError(null));
+
+      console.log('Opening AppKit connect modal...');
+      
+      // Open AppKit modal for wallet connection
+      // Try opening with different approaches to ensure modal shows
+      try {
+        open({ view: 'Connect' });
+      } catch (openError) {
+        console.error('Error opening AppKit modal:', openError);
+        // Fallback: try opening Account view which should also show connect option
+        open({ view: 'Account' });
+      }
+      
+      // Don't wait here - let the useEffect above handle the connection status
+      // The modal will handle the connection flow, and useAccount will update
+      // Note: Loading state will be cleared when connection succeeds or fails
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to connect wallet';
+      console.error('Error in connectWallet:', error);
+      dispatch(setError(errorMessage));
+      dispatch(setLoading(false));
+      throw error;
+    }
+  }, [open, dispatch]);
+
+  const disconnectWallet = useCallback(() => {
+    // Disconnect from AppKit first
+    disconnectAppKit();
+    dispatch(disconnect());
+  }, [dispatch]);
+
+  const formatAddress = (address: string | null) => {
+    return formatAddressUtil(address);
   };
 
   return (

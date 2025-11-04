@@ -9,9 +9,9 @@
  * open({ view: 'Networks' });
  */
 
+import { mezoTestnetChain } from '@/constants/chain';
 import type { Address } from 'viem';
 import { createPublicClient, http } from 'viem';
-import { base as baseChain } from 'viem/chains';
 
 export interface EVMWallet {
   address: Address;
@@ -39,7 +39,7 @@ export async function connectEVMWallet(
     }
 
     // Open AppKit modal to connect EVM wallet
-    openModal({ view: 'Networks' });
+    openModal({ view: 'Connect' });
 
     // Wait for connection
     // Note: This is a simplified version - actual implementation would need
@@ -73,24 +73,27 @@ export async function getEVMAddress(): Promise<Address | null> {
 }
 
 /**
- * Get EVM balance (ETH)
+ * Get EVM balance (BTC on Mezo testnet)
  */
-export async function getEVMBalance(address: Address, chainId: number = 8453): Promise<string> {
+export async function getEVMBalance(address: Address, chainId: number = 31611): Promise<string> {
   try {
-    const rpcUrl =
-      chainId === 8453
-        ? process.env.EXPO_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org'
-        : process.env.EXPO_PUBLIC_BASE_TESTNET_RPC_URL || 'https://sepolia.base.org';
+    // Only support Mezo testnet
+    if (chainId !== 31611) {
+      console.warn(`Unsupported chain ID: ${chainId}. Only Mezo testnet (31611) is supported.`);
+      return '0';
+    }
+
+    const rpcUrl = process.env.EXPO_PUBLIC_MEZO_TESTNET_RPC_URL || 'https://rpc.test.mezo.org';
 
     const publicClient = createPublicClient({
-      chain: baseChain,
+      chain: mezoTestnetChain,
       transport: http(rpcUrl),
     });
 
     const balance = await publicClient.getBalance({ address });
-    // Convert from wei to ETH
-    const ethBalance = Number(balance) / 1e18;
-    return ethBalance.toFixed(4);
+    // Convert from wei (BTC with 18 decimals on Mezo) to BTC
+    const nativeBalance = Number(balance) / 1e18;
+    return nativeBalance.toFixed(4);
   } catch (error) {
     console.error('Error getting EVM balance:', error);
     return '0';
@@ -103,16 +106,19 @@ export async function getEVMBalance(address: Address, chainId: number = 8453): P
 export async function getTokenBalance(
   address: Address,
   tokenAddress: Address,
-  chainId: number = 8453,
+  chainId: number = 31611,
 ): Promise<string> {
   try {
-    const rpcUrl =
-      chainId === 8453
-        ? process.env.EXPO_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org'
-        : process.env.EXPO_PUBLIC_BASE_TESTNET_RPC_URL || 'https://sepolia.base.org';
+    // Only support Mezo testnet
+    if (chainId !== 31611) {
+      console.warn(`Unsupported chain ID: ${chainId}. Only Mezo testnet (31611) is supported.`);
+      return '0';
+    }
+
+    const rpcUrl = process.env.EXPO_PUBLIC_MEZO_TESTNET_RPC_URL || 'https://rpc.test.mezo.org';
 
     const publicClient = createPublicClient({
-      chain: baseChain,
+      chain: mezoTestnetChain,
       transport: http(rpcUrl),
     });
 
