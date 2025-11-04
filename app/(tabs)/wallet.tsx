@@ -5,29 +5,99 @@ import { Card } from '@/components/ui/card';
 import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
 import { useMezo } from '@/hooks/useMezo';
+import { resetOnboarding } from '@/utils/onboarding';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  Alert,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 export default function WalletTab() {
   const router = useRouter();
-  const { wallet, formatAddress } = useWallet();
-  const { collateralInfo, isLoading: mezoLoading, refetch } = useMezo();
-  const [activeSection, setActiveSection] = useState<'earn' | 'referral' | 'borrow'>('earn');
+  const { wallet, formatAddress, refreshBalances, connectWallet } = useWallet();
+  const { mezoClient, collateralInfo, isLoading: mezoLoading, refetch } = useMezo();
+  const [btcPrice, setBtcPrice] = useState(100000); // Default BTC price
 
-  // Calculate total balance from wallet and collateral
-  const nativeBalance = parseFloat(wallet.evmBalance || wallet.btcBalance || '0');
-  const musdBalance = parseFloat(wallet.musdBalance || '0');
-  const totalBalance = nativeBalance + musdBalance;
+  // Refresh balances when screen comes into focus (only if connected)
+  useFocusEffect(
+    useCallback(() => {
+      if (wallet.isConnected) {
+        refreshBalances();
+        refetch(); // Also refresh Mezo collateral info
+      }
+    }, [refreshBalances, refetch, wallet.isConnected]),
+  );
+
+  // Fetch BTC price (only if connected)
+  useEffect(() => {
+    const fetchBTCPrice = async () => {
+      if (mezoClient && wallet.evmAddress && wallet.isConnected) {
+        try {
+          // MezoClient.getBtcPrice() already handles errors and returns a fallback value
+          const price = await mezoClient.getBtcPrice();
+          // BTC price on Mezo is in wei (18 decimals), convert to USD
+          setBtcPrice(Number(price) / 1e18);
+        } catch (error) {
+          // If MezoClient fails completely, use default price
+          // This shouldn't happen as MezoClient has its own fallback, but just in case
+          console.warn('Failed to fetch BTC price, using default:', error);
+          setBtcPrice(100000); // Default fallback
+        }
+      }
+    };
+    fetchBTCPrice();
+  }, [mezoClient, wallet.evmAddress, wallet.isConnected]);
+
+  // Show connect wallet screen if not connected
+  if (!wallet.isConnected) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="light-content" />
+        <AppHeader title="Wallet" showClose={false} />
+        <ScrollView
+          style={styles.scrollView}
+          contentContainerStyle={styles.connectWalletContent}
+          showsVerticalScrollIndicator={false}>
+          
+          {/* Decorative Icons */}
+          <View style={styles.decorativeIcons}>
+            <Ionicons name="wallet-outline" size={64} color={DesignColors.yellow.primary} style={styles.decorativeIcon} />
+          </View>
+
+          {/* Empty State Content */}
+          <View style={styles.emptyStateContainer}>
+            <Text style={styles.emptyStateTitle}>Connect Your Wallet</Text>
+            <Text style={styles.emptyStateText}>
+              Connect your wallet to view balances, manage your trove, and start borrowing MUSD.
+            </Text>
+          </View>
+
+          {/* Connect Wallet Button */}
+          <Button
+            title="Connect Wallet"
+            onPress={() => connectWallet('evm')}
+            variant="primary"
+            size="lg"
+            style={styles.connectWalletButton}
+            leftIcon={<Ionicons name="wallet" size={20} color={DesignColors.dark.primary} />}
+          />
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // Calculate total balance in USD (only shown when connected)
+  const nativeBalance = parseFloat(wallet.evmBalance || wallet.btcBalance || '0'); // BTC balance
+  const musdBalance = parseFloat(wallet.musdBalance || '0'); // MUSD balance (already in USD)
+  const btcValueUSD = nativeBalance * btcPrice; // Convert BTC to USD
+  const totalBalance = btcValueUSD + musdBalance; // Total in USD
 
   // In positions = borrowed MUSD (debt)
   const inPositions = parseFloat(collateralInfo?.borrowedMUSD || '0');
@@ -38,34 +108,33 @@ export default function WalletTab() {
   const changePercent = 0; // TODO: Implement historical balance tracking for accurate change calculation
   const changeAmount = 0; // TODO: Calculate from stored historical balance data
 
-  const tasks = [
-    {
-      id: '1',
-      icon: 'paper-plane' as const,
-      title: 'Follow Telegram',
-      points: 100,
-      status: 'claim' as const,
-    },
-    {
-      id: '2',
-      icon: 'logo-twitter' as const,
-      title: 'Check Pikolo X',
-      points: 100,
-      status: 'start' as const,
-    },
-    {
-      id: '3',
-      icon: 'logo-facebook' as const,
-      title: 'Check Pikolo Facebook',
-      points: 100,
-      status: 'completed' as const,
-    },
-  ];
+  const handleResetOnboarding = async () => {
+    try {
+      await resetOnboarding();
+      Alert.alert('Success', 'Onboarding reset. Please restart the app to see onboarding again.');
+    } catch (error) {
+      Alert.alert('Error', 'Failed to reset onboarding');
+      console.error('Error resetting onboarding:', error);
+    }
+  };
 
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
-      <AppHeader title="Wallet" showClose={false} />
+      <AppHeader 
+        title="Wallet" 
+        showClose={false}
+        rightActions={
+          <Button
+            title=""
+            onPress={handleResetOnboarding}
+            variant="outline"
+            size="sm"
+            style={styles.debugButton}
+            leftIcon={<Ionicons name="refresh" size={16} color={DesignColors.dark.muted} />}
+          />
+        }
+      />
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
@@ -79,13 +148,13 @@ export default function WalletTab() {
                 <View style={styles.avatar}>
                   <Ionicons name="person" size={24} color={DesignColors.light.white} />
                 </View>
-                <Text style={styles.greeting}>Hi, Dreadfulz</Text>
+                <Text style={styles.greeting}>Hi, Legion</Text>
               </View>
             </View>
             <View style={styles.balanceSection}>
               <Text style={styles.balanceLabel}>Total balance</Text>
               <Text style={styles.balanceValue}>
-                {totalBalance > 0 ? totalBalance.toLocaleString() : '0.00'}
+                ${totalBalance > 0 ? totalBalance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '0.00'}
               </Text>
               <Text style={styles.balanceSubtext}>
                 {nativeBalance > 0 && `${nativeBalance.toFixed(4)} BTC`}
@@ -106,7 +175,7 @@ export default function WalletTab() {
                 variant="primary"
                 size="md"
                 leftIcon={<Ionicons name="add" size={20} color={DesignColors.dark.primary} />}
-                style={StyleSheet.flatten([styles.topUpButton, styles.actionButton])}
+                style={styles.fullWidthButton}
               />
               <Button
                 title="Check Borrowing Power"
@@ -114,7 +183,15 @@ export default function WalletTab() {
                 variant="outline"
                 size="md"
                 leftIcon={<Ionicons name="calculator" size={20} color={DesignColors.yellow.primary} />}
-                style={StyleSheet.flatten([styles.topUpButton, styles.actionButton])}
+                style={styles.fullWidthButton}
+              />
+              <Button
+                title="Swap"
+                onPress={() => router.push('/swap' as any)}
+                variant="outline"
+                size="md"
+                leftIcon={<Ionicons name="swap-horizontal" size={20} color={DesignColors.yellow.primary} />}
+                style={styles.fullWidthButton}
               />
             </View>
           </View>
@@ -155,139 +232,97 @@ export default function WalletTab() {
           )}
         </View>
 
-        {/* Tabs */}
-        <View style={styles.tabsContainer}>
-          <TouchableOpacity
-            style={[styles.tab, activeSection === 'earn' && styles.activeTab]}
-            onPress={() => setActiveSection('earn')}>
-            <Text
-              style={[
-                styles.tabText,
-                activeSection === 'earn' && styles.activeTabText,
-              ]}>
-              Earn
-            </Text>
-            {activeSection === 'earn' && <View style={styles.tabIndicator} />}
-          </TouchableOpacity>
-          {collateralInfo && parseFloat(collateralInfo.borrowedMUSD) > 0 && (
-            <TouchableOpacity
-              style={[styles.tab, activeSection === 'borrow' && styles.activeTab]}
-              onPress={() => setActiveSection('borrow')}>
-              <Text
-                style={[
-                  styles.tabText,
-                  activeSection === 'borrow' && styles.activeTabText,
-                ]}>
-                Borrow
-              </Text>
-              {activeSection === 'borrow' && <View style={styles.tabIndicator} />}
-            </TouchableOpacity>
-          )}
-          <TouchableOpacity
-            style={[styles.tab, activeSection === 'referral' && styles.activeTab]}
-            onPress={() => setActiveSection('referral')}>
-            <Text
-              style={[
-                styles.tabText,
-                activeSection === 'referral' && styles.activeTabText,
-              ]}>
-              Referral
-            </Text>
-            {activeSection === 'referral' && <View style={styles.tabIndicator} />}
-          </TouchableOpacity>
-        </View>
+        {/* Borrow Section Header - Only show if user has a trove */}
+        {collateralInfo && parseFloat(collateralInfo.borrowedMUSD) > 0 && (
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionHeaderText}>Borrow Management</Text>
+          </View>
+        )}
 
         {/* Borrow Management Section */}
-        {activeSection === 'borrow' &&
-          collateralInfo &&
-          parseFloat(collateralInfo.borrowedMUSD) > 0 && (
-            <View style={styles.borrowSection}>
-              <Card variant="elevated" style={styles.borrowCard}>
-                <Text style={styles.borrowTitle}>Manage Your Trove</Text>
-                <View style={styles.borrowActions}>
-                  <Button
-                    title="View Your Loan"
-                    onPress={() => router.push('/your-loan' as any)}
-                    variant="primary"
-                    size="md"
-                    style={styles.borrowActionButton}
-                    leftIcon={<Ionicons name="document-text" size={20} color={DesignColors.dark.primary} />}
-                  />
-                  <Button
-                    title="Add Collateral"
-                    onPress={() => router.push('/borrow' as any)}
-                    variant="outline"
-                    size="md"
-                    style={styles.borrowActionButton}
-                  />
-                  <Button
-                    title="Repay MUSD"
-                    onPress={() => router.push('/borrow' as any)}
-                    variant="secondary"
-                    size="md"
-                    style={styles.borrowActionButton}
-                  />
+        {collateralInfo && parseFloat(collateralInfo.borrowedMUSD) > 0 && (
+          <View style={styles.borrowSection}>
+            <Card variant="elevated" style={styles.borrowCard}>
+              {/* Header with Icon */}
+              <View style={styles.troveHeader}>
+                <View style={styles.troveIconContainer}>
+                  <Ionicons name="shield-checkmark" size={24} color={DesignColors.yellow.primary} />
                 </View>
-              </Card>
-            </View>
-          )}
+                <View style={styles.troveHeaderText}>
+                  <Text style={styles.borrowTitle}>Manage Your Trove</Text>
+                  <Text style={styles.borrowSubtitle}>Monitor and manage your collateral position</Text>
+                </View>
+              </View>
 
-        {/* Daily Check-in */}
-        <Card variant="elevated" style={styles.checkInCard}>
-          <View style={styles.checkInContent}>
-            <Ionicons name="laptop-outline" size={32} color={DesignColors.yellow.primary} />
-            <View style={styles.checkInText}>
-              <Text style={styles.checkInTitle}>1-day check-in</Text>
-              <Text style={styles.checkInSubtitle}>Next claim in 08h 11m</Text>
-            </View>
-            <Ionicons name="checkmark-circle" size={24} color={DesignColors.yellow.primary} />
-          </View>
-        </Card>
+              {/* Stats Grid */}
+              <View style={styles.troveStats}>
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Collateral</Text>
+                  <Text style={styles.statValue}>
+                    {parseFloat(collateralInfo.btcCollateral || '0').toFixed(4)} BTC
+                  </Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Debt</Text>
+                  <Text style={styles.statValue}>
+                    {parseFloat(collateralInfo.borrowedMUSD || '0').toFixed(2)} MUSD
+                  </Text>
+                </View>
+                <View style={styles.statDivider} />
+                <View style={styles.statItem}>
+                  <Text style={styles.statLabel}>Health</Text>
+                  <View style={styles.healthBadge}>
+                    <View style={[
+                      styles.healthDot,
+                      { backgroundColor: collateralInfo.healthStatus === 'healthy' ? DesignColors.success : 
+                                         collateralInfo.healthStatus === 'warning' ? DesignColors.warning : 
+                                         DesignColors.error }
+                    ]} />
+                    <Text style={[
+                      styles.statValue,
+                      { color: collateralInfo.healthStatus === 'healthy' ? DesignColors.success : 
+                              collateralInfo.healthStatus === 'warning' ? DesignColors.warning : 
+                              DesignColors.error }
+                    ]}>
+                      {collateralInfo.healthStatus === 'healthy' ? 'Healthy' :
+                       collateralInfo.healthStatus === 'warning' ? 'Warning' : 'Danger'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
 
-        {/* Tasks */}
-        <View style={styles.tasksContainer}>
-          <Text style={styles.sectionTitle}>Tasks</Text>
-          {tasks.map((task) => (
-            <Card key={task.id} variant="elevated" style={styles.taskCard}>
-              <View style={styles.taskContent}>
-                <View style={styles.taskIconContainer}>
-                  <Ionicons
-                    name={task.icon}
-                    size={24}
-                    color={DesignColors.light.white}
-                  />
-                </View>
-                <View style={styles.taskInfo}>
-                  <Text style={styles.taskTitle}>{task.title}</Text>
-                  <Text style={styles.taskPoints}>+ {task.points}</Text>
-                </View>
-                {task.status === 'claim' && (
-                  <Button
-                    title="Claim"
-                    onPress={() => {}}
-                    variant="primary"
-                    size="sm"
-                  />
-                )}
-                {task.status === 'start' && (
-                  <Button
-                    title="Start"
-                    onPress={() => {}}
-                    variant="outline"
-                    size="sm"
-                  />
-                )}
-                {task.status === 'completed' && (
-                  <Ionicons
-                    name="checkmark-circle"
-                    size={24}
-                    color={DesignColors.yellow.primary}
-                  />
-                )}
+              {/* Action Buttons */}
+              <View style={styles.borrowActions}>
+                <Button
+                  title="View Your Loan"
+                  onPress={() => router.push('/your-loan' as any)}
+                  variant="primary"
+                  size="md"
+                  style={styles.borrowActionButton}
+                  leftIcon={<Ionicons name="document-text" size={20} color={DesignColors.dark.primary} />}
+                />
+                <Button
+                  title="Add Collateral"
+                  onPress={() => router.push('/add-collateral' as any)}
+                  variant="outline"
+                  size="md"
+                  style={styles.borrowActionButton}
+                  leftIcon={<Ionicons name="add-circle-outline" size={20} color={DesignColors.yellow.primary} />}
+                />
+                <Button
+                  title="Repay MUSD"
+                  onPress={() => router.push('/repay-debt' as any)}
+                  variant="secondary"
+                  size="md"
+                  style={styles.borrowActionButton}
+                  leftIcon={<Ionicons name="arrow-down-circle-outline" size={20} color={DesignColors.light.white} />}
+                />
               </View>
             </Card>
-          ))}
-        </View>
+          </View>
+        )}
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -367,16 +402,12 @@ const styles = StyleSheet.create({
     fontSize: Typography.body.sm.fontSize,
   },
   actionButtons: {
-    flexDirection: 'row',
     gap: Spacing.sm,
     width: '100%',
     marginTop: Spacing.md,
   },
-  actionButton: {
-    flex: 1,
-  },
-  topUpButton: {
-    marginTop: Spacing.sm,
+  fullWidthButton: {
+    width: '100%',
   },
   metricsContainer: {
     marginBottom: Spacing.md,
@@ -385,6 +416,7 @@ const styles = StyleSheet.create({
     backgroundColor: DesignColors.dark.card,
     padding: Spacing.md,
     borderRadius: Radius.lg,
+    marginBottom: Spacing.md,
   },
   metricLabel: {
     color: DesignColors.dark.muted,
@@ -409,25 +441,91 @@ const styles = StyleSheet.create({
     fontSize: Typography.body.sm.fontSize,
     marginTop: Spacing.xs,
   },
+  sectionHeader: {
+    marginBottom: Spacing.sm,
+  },
+  sectionHeaderText: {
+    color: DesignColors.light.white,
+    fontSize: Typography.heading.sm.fontSize,
+    fontWeight: '600',
+  },
   borrowSection: {
     marginBottom: Spacing.md,
   },
   borrowCard: {
     padding: Spacing.lg,
   },
+  troveHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: Spacing.md,
+    marginBottom: Spacing.lg,
+  },
+  troveIconContainer: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: DesignColors.dark.secondary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: DesignColors.yellow.primary,
+  },
+  troveHeaderText: {
+    flex: 1,
+  },
   borrowTitle: {
     color: DesignColors.light.white,
-    fontSize: Typography.heading.sm.fontSize,
+    fontSize: Typography.heading.md.fontSize,
     fontWeight: 'bold',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.xs,
+  },
+  borrowSubtitle: {
+    color: DesignColors.dark.muted,
+    fontSize: Typography.body.sm.fontSize,
+  },
+  troveStats: {
+    flexDirection: 'row',
+    backgroundColor: DesignColors.dark.secondary,
+    borderRadius: Radius.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.lg,
+    alignItems: 'center',
+  },
+  statItem: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  statLabel: {
+    color: DesignColors.dark.muted,
+    fontSize: Typography.body.sm.fontSize,
+    marginBottom: Spacing.xs,
+  },
+  statValue: {
+    color: DesignColors.light.white,
+    fontSize: Typography.body.md.fontSize,
+    fontWeight: '600',
+  },
+  statDivider: {
+    width: 1,
+    height: 40,
+    backgroundColor: DesignColors.dark.muted,
+  },
+  healthBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.xs,
+  },
+  healthDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
   },
   borrowActions: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
     gap: Spacing.sm,
   },
   borrowActionButton: {
-    flex: 1,
+    width: '100%',
   },
   tabsContainer: {
     flexDirection: 'row',
@@ -519,6 +617,50 @@ const styles = StyleSheet.create({
   taskPoints: {
     color: DesignColors.dark.muted,
     fontSize: Typography.body.sm.fontSize,
+  },
+  connectWalletContent: {
+    flex: 1,
+    padding: Spacing.md,
+    paddingTop: Spacing.xl,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  decorativeIcons: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: Spacing.xl,
+    gap: Spacing.md,
+  },
+  decorativeIcon: {
+    opacity: 0.8,
+  },
+  emptyStateContainer: {
+    alignItems: 'center',
+    marginBottom: Spacing.xl,
+    paddingHorizontal: Spacing.lg,
+  },
+  emptyStateTitle: {
+    color: DesignColors.light.white,
+    fontSize: Typography.heading.lg.fontSize,
+    fontWeight: 'bold',
+    marginBottom: Spacing.sm,
+    textAlign: 'center',
+  },
+  emptyStateText: {
+    color: DesignColors.dark.muted,
+    fontSize: Typography.body.md.fontSize,
+    textAlign: 'center',
+    lineHeight: 24,
+  },
+  connectWalletButton: {
+    width: '100%',
+    marginBottom: Spacing.xl,
+  },
+  debugButton: {
+    paddingHorizontal: Spacing.sm,
+    paddingVertical: Spacing.xs,
+    minWidth: 40,
   },
 });
 
