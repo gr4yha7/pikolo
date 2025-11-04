@@ -5,6 +5,7 @@
  */
 
 import { Address, PublicClient, WalletClient, decodeEventLog, getContract } from 'viem';
+import MUSDABI from './abis/mezo/MUSD.json';
 import PredictionMarketABI from './abis/prediction/PredictionMarket.json';
 
 export interface MarketData {
@@ -57,6 +58,60 @@ export class PredictionMarketClient {
         wallet: walletClient,
       },
     });
+  }
+
+  /**
+   * Get MUSD token address from market contract
+   */
+  async getMUSDAddress(): Promise<Address> {
+    return await this.contract.read.musdToken();
+  }
+
+  /**
+   * Check MUSD allowance for this market contract
+   */
+  async getMUSDAllowance(userAddress: Address): Promise<bigint> {
+    const musdAddress = await this.getMUSDAddress();
+    const musdContract = getContract({
+      address: musdAddress,
+      abi: MUSDABI.abi,
+      client: {
+        public: this.publicClient,
+        wallet: this.walletClient,
+      },
+    });
+    const allowance = await musdContract.read.allowance([userAddress, this.contract.address]);
+    return allowance as bigint;
+  }
+
+  /**
+   * Approve MUSD tokens for this market contract
+   */
+  async approveMUSD(amount: bigint): Promise<string> {
+    if (!this.walletClient?.account) {
+      throw new Error('Wallet client required for transactions');
+    }
+
+    const musdAddress = await this.getMUSDAddress();
+    const currentAllowance = await this.getMUSDAllowance(this.walletClient.account.address);
+
+    // Only approve if current allowance is less than required amount
+    if (currentAllowance < amount) {
+      const musdContract = getContract({
+        address: musdAddress,
+        abi: MUSDABI.abi,
+        client: {
+          public: this.publicClient,
+          wallet: this.walletClient,
+        },
+      });
+      const hash = await musdContract.write.approve([this.contract.address, amount]);
+      await this.publicClient.waitForTransactionReceipt({ hash });
+      return hash;
+    }
+
+    // Return empty string if no approval needed
+    return '';
   }
 
   /**
@@ -122,6 +177,14 @@ export class PredictionMarketClient {
   ): Promise<{ hash: string; sharesOut: bigint }> {
     if (!this.walletClient?.account) {
       throw new Error('Wallet client required for transactions');
+    }
+
+    // Check and approve MUSD if needed
+    const currentAllowance = await this.getMUSDAllowance(this.walletClient.account.address);
+    if (currentAllowance < params.amountIn) {
+      // Approve max uint256 for efficiency (only needs to be done once per market)
+      const maxApproval = BigInt('0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff');
+      await this.approveMUSD(maxApproval);
     }
 
     const hash = await this.contract.write.buyShares([

@@ -2,6 +2,7 @@
  * Hook for PredictionMarket contract interactions
  */
 
+import { mezoTestnetChain } from '@/constants/chain';
 import type {
   BuySharesParams,
   MarketData,
@@ -10,33 +11,11 @@ import type {
   UserPosition,
 } from '@/lib/contracts/PredictionMarket';
 import { PredictionMarketClient } from '@/lib/contracts/PredictionMarket';
+import { resolveSingleMarket } from '@/services/price-resolution';
 import { useAccount } from '@reown/appkit-react-native';
 import { useEffect, useState } from 'react';
 import { createPublicClient, http, type Address, type PublicClient, type WalletClient } from 'viem';
 import { useWalletClient } from 'wagmi';
-
-// Mezo testnet chain definition
-const mezoTestnetChain = {
-  id: 31611,
-  name: 'Mezo Testnet',
-  nativeCurrency: {
-    decimals: 18,
-    name: 'Bitcoin',
-    symbol: 'BTC',
-  },
-  rpcUrls: {
-    default: {
-      http: ['https://rpc.test.mezo.org'],
-    },
-  },
-  blockExplorers: {
-    default: {
-      name: 'Mezo Explorer',
-      url: 'https://explorer.test.mezo.org',
-    },
-  },
-  testnet: true,
-};
 
 export function usePredictionMarket(marketAddress: Address | null) {
   const { address, isConnected } = useAccount();
@@ -238,6 +217,54 @@ export function usePredictionMarket(marketAddress: Address | null) {
     }
   };
 
+  // Resolve market (manual resolution for testing)
+  const resolveMarket = async (testPrice?: number) => {
+    if (!marketAddress) {
+      throw new Error('Market address is required');
+    }
+
+    if (!walletClient) {
+      throw new Error('Wallet client not available. Please connect your wallet.');
+    }
+
+    try {
+      setIsLoading(true);
+      setError(null);
+
+      // Create public client for reading market data
+      const rpcUrl =
+        process.env.EXPO_PUBLIC_MEZO_TESTNET_RPC_URL || 'https://rpc.test.mezo.org';
+      const client = createPublicClient({
+        chain: mezoTestnetChain,
+        transport: http(rpcUrl),
+      }) as PublicClient;
+
+      // Resolve the market
+      const result = await resolveSingleMarket(
+        marketAddress,
+        walletClient as WalletClient,
+        client,
+        testPrice,
+      );
+
+      if (!result.success) {
+        throw new Error(result.error || 'Failed to resolve market');
+      }
+
+      // Refresh market data after resolution
+      await fetchMarketData();
+
+      return result;
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : 'Failed to resolve market';
+      setError(errorMessage);
+      throw err;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   // Auto-fetch on mount and when address/market changes
   useEffect(() => {
     if (marketClient && isConnected) {
@@ -256,6 +283,7 @@ export function usePredictionMarket(marketAddress: Address | null) {
     buyShares,
     sellShares,
     redeem,
+    resolveMarket,
     estimateSharesOut,
     estimateAmountOut,
     getSharePrice,

@@ -5,6 +5,7 @@
  */
 
 import { Address, PublicClient, WalletClient, getContract } from 'viem';
+import MUSDABI from './abis/mezo/MUSD.json';
 import PredictionMarketFactoryABI from './abis/prediction/PredictionMarketFactory.json';
 
 export interface CreateMarketParams {
@@ -45,11 +46,9 @@ export class PredictionMarketFactoryClient {
       throw new Error('Wallet client required for transactions');
     }
 
-    // Convert threshold from USD to wei (1e18 scaled)
-    const thresholdInWei = BigInt(Math.floor(params.threshold * 1e18));
-    
+    // Note: Contract will scale threshold to 1e18 internally, so we pass the raw USD value
     const hash = await this.contract.write.createMarket([
-      thresholdInWei, // Price threshold in wei (1e18 scaled)
+      BigInt(Math.floor(params.threshold)), // Price threshold in USD (contract will scale to 1e18)
       BigInt(params.expirationTime), // Unix timestamp
       params.initialLiquidity, // Initial liquidity in MUSD (wei)
     ]);
@@ -101,6 +100,42 @@ export class PredictionMarketFactoryClient {
    */
   async getMUSDAddress(): Promise<Address> {
     return await this.contract.read.musdToken();
+  }
+
+  /**
+   * Approve MUSD tokens for the factory contract
+   * This must be called before createMarket if the user hasn't approved enough tokens
+   */
+  async approveMUSD(amount: bigint): Promise<string> {
+    if (!this.walletClient?.account) {
+      throw new Error('Wallet client required for transactions');
+    }
+
+    const musdAddress = await this.getMUSDAddress();
+    const musdContract = getContract({
+      address: musdAddress,
+      abi: MUSDABI.abi,
+      client: {
+        public: this.publicClient,
+        wallet: this.walletClient,
+      },
+    });
+
+    // Check current allowance
+    const currentAllowance = (await musdContract.read.allowance([
+      this.walletClient.account.address,
+      this.contract.address,
+    ])) as bigint;
+
+    // Only approve if current allowance is less than required amount
+    if (currentAllowance < amount) {
+      const hash = await musdContract.write.approve([this.contract.address, amount]);
+      await this.publicClient.waitForTransactionReceipt({ hash });
+      return hash;
+    }
+
+    // Return empty string if no approval needed
+    return '';
   }
 }
 
