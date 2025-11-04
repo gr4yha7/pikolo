@@ -1,16 +1,17 @@
 import { Button } from '@/components/ui/button';
 import { DesignColors, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
+import { setOnboardingCompleted } from '@/utils/onboarding';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    ActivityIndicator,
-    ScrollView,
-    StatusBar,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  ScrollView,
+  StatusBar,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
 import { SafeAreaView as SafeArea } from 'react-native-safe-area-context';
 
@@ -64,15 +65,21 @@ export default function OnboardingScreen() {
         try {
           setIsConnecting(true);
           await connectWallet('evm'); // Connect EVM wallet (Mezo uses EVM-compatible chain)
+          
+          // Mark onboarding as completed after successful wallet connection
+          await setOnboardingCompleted();
+          
           // After successful connection, navigate to home
           router.replace('/(tabs)');
         } catch (error) {
           console.error('Error connecting wallet:', error);
-          // Stay on onboarding if connection fails
+          // Stay on onboarding if connection fails - user can try again
         } finally {
           setIsConnecting(false);
         }
       } else {
+        // Wallet already connected, just mark onboarding as completed
+        await setOnboardingCompleted();
         router.replace('/(tabs)');
       }
     } else {
@@ -80,7 +87,9 @@ export default function OnboardingScreen() {
     }
   };
 
-  const handleSkip = () => {
+  const handleSkip = async () => {
+    // Allow skipping onboarding - user can connect wallet later from the app
+    await setOnboardingCompleted();
     router.replace('/(tabs)');
   };
 
