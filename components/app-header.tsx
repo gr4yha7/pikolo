@@ -28,10 +28,13 @@ export function AppHeader({
     if (onClose) {
       onClose();
     } else {
-      // Check if we can go back, otherwise navigate to home
+      // Check if we can go back, otherwise navigate to tabs
+      // When navigating from a tab screen, router.canGoBack() should work
+      // but we also check if pathname suggests we should go to tabs
       if (router.canGoBack()) {
         router.back();
       } else {
+        // Fallback: navigate to tabs root if we can't go back
         router.replace('/(tabs)');
       }
     }
@@ -62,8 +65,8 @@ export function AppHeader({
           style={styles.closeButton}
           onPress={handleClose}
           activeOpacity={0.7}>
-          <Ionicons name="close" size={16} color={DesignColors.light.white} />
-          <Text style={styles.closeText}>Close</Text>
+          <Ionicons name="arrow-back" size={20} color={DesignColors.light.white} />
+          <Text style={styles.closeText}>Back</Text>
         </TouchableOpacity>
       )}
       <View style={[styles.titleContainer, { alignItems: !isHome ? 'center' : 'flex-start' }]}>
