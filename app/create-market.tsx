@@ -4,6 +4,7 @@ import { Card } from '@/components/ui/card';
 import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { useWallet } from '@/hooks/use-wallet';
 import { useMarketFactory } from '@/hooks/useMarketFactory';
+import { setMarketMetadata } from '@/utils/market-metadata';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
@@ -14,6 +15,7 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  TouchableOpacity,
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -21,7 +23,7 @@ import { parseEther } from 'viem';
 
 export default function CreateMarketScreen() {
   const router = useRouter();
-  const { wallet } = useWallet();
+  const { wallet, refreshBalances } = useWallet();
   
   // Get factory address from environment
   const factoryAddress = (process.env.EXPO_PUBLIC_PREDICTION_MARKET_FACTORY_ADDRESS || '') as `0x${string}` | null;
@@ -33,19 +35,20 @@ export default function CreateMarketScreen() {
   } = useMarketFactory(factoryAddress);
 
   const [threshold, setThreshold] = useState('');
-  const [expirationDays, setExpirationDays] = useState('7');
+  const [expirationMinutes, setExpirationMinutes] = useState('60');
   const [initialLiquidity, setInitialLiquidity] = useState('');
+  const [isAboveThreshold, setIsAboveThreshold] = useState(true); // true = above, false = below
   const [isCreating, setIsCreating] = useState(false);
 
-  // Calculate expiration timestamp
-  const expirationTimestamp = Math.floor(Date.now() / 1000) + (parseInt(expirationDays || '7') * 24 * 60 * 60);
+  // Calculate expiration timestamp (in minutes for testing)
+  const expirationTimestamp = Math.floor(Date.now() / 1000) + (parseInt(expirationMinutes || '60') * 60);
 
   // Get MUSD balance
   const musdBalance = wallet.musdBalance ? parseFloat(wallet.musdBalance) : 0;
 
   // Auto-generate market question
   const question = threshold
-    ? `Will Bitcoin price be above $${parseFloat(threshold).toLocaleString(undefined, {
+    ? `Will Bitcoin price be ${isAboveThreshold ? 'above' : 'below'} $${parseFloat(threshold).toLocaleString(undefined, {
         minimumFractionDigits: 0,
         maximumFractionDigits: 0,
       })} by ${new Date(expirationTimestamp * 1000).toLocaleDateString()}?`
@@ -62,8 +65,15 @@ export default function CreateMarketScreen() {
       return;
     }
 
-    if (!expirationDays || parseInt(expirationDays) <= 0) {
-      Alert.alert('Error', 'Please enter valid expiration days');
+    if (!expirationMinutes || parseInt(expirationMinutes) <= 0) {
+      Alert.alert('Error', 'Please enter valid expiration minutes (minimum 1 minute)');
+      return;
+    }
+
+    // Ensure expiration is at least 1 minute in the future
+    const minExpiration = Math.floor(Date.now() / 1000) + 60;
+    if (expirationTimestamp < minExpiration) {
+      Alert.alert('Error', 'Expiration time must be at least 1 minute in the future');
       return;
     }
 
@@ -89,13 +99,28 @@ export default function CreateMarketScreen() {
         initialLiquidity: liquidityAmount,
       });
 
+      // Handle success - result should have marketAddress
+      const marketAddress = result?.marketAddress;
+      let successMessage = 'Market created successfully!';
+      
+      // Store market metadata (isAboveThreshold) since it's not stored on-chain
+      if (marketAddress && typeof marketAddress === 'string' && marketAddress.startsWith('0x')) {
+        await setMarketMetadata(marketAddress as `0x${string}`, { isAboveThreshold });
+        successMessage += ` Address: ${marketAddress.slice(0, 10)}...`;
+      }
+
+      // Refresh wallet balances after successful market creation
+      await refreshBalances();
+
       Alert.alert(
         'Success',
-        `Market created successfully! Address: ${result.marketAddress.slice(0, 10)}...`,
+        successMessage,
         [
           {
             text: 'OK',
-            onPress: () => router.back(),
+            onPress: () => {
+              router.back();
+            },
           },
         ],
       );
@@ -138,6 +163,41 @@ export default function CreateMarketScreen() {
           </View>
         </Card>
 
+        {/* Market Direction Selector */}
+        <View style={styles.inputContainer}>
+          <Text style={styles.label}>Market Direction</Text>
+          <View style={styles.directionSelector}>
+            <TouchableOpacity
+              style={[
+                styles.directionButton,
+                isAboveThreshold && styles.directionButtonActive,
+              ]}
+              onPress={() => setIsAboveThreshold(true)}>
+              <Text
+                style={[
+                  styles.directionButtonText,
+                  isAboveThreshold && styles.directionButtonTextActive,
+                ]}>
+                Above Threshold
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.directionButton,
+                !isAboveThreshold && styles.directionButtonActive,
+              ]}
+              onPress={() => setIsAboveThreshold(false)}>
+              <Text
+                style={[
+                  styles.directionButtonText,
+                  !isAboveThreshold && styles.directionButtonTextActive,
+                ]}>
+                Below Threshold
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* BTC Price Threshold */}
         <View style={styles.inputContainer}>
           <Text style={styles.label}>BTC Price Threshold (USD)</Text>
@@ -154,22 +214,25 @@ export default function CreateMarketScreen() {
           </View>
         </View>
 
-        {/* Expiration Days */}
+        {/* Expiration Minutes */}
         <View style={styles.inputContainer}>
-          <Text style={styles.label}>Expiration (Days from now)</Text>
+          <Text style={styles.label}>Expiration (Minutes from now)</Text>
           <View style={styles.inputWrapper}>
             <TextInput
               style={styles.input}
-              value={expirationDays}
-              onChangeText={setExpirationDays}
+              value={expirationMinutes}
+              onChangeText={setExpirationMinutes}
               keyboardType="numeric"
-              placeholder="7"
+              placeholder="60"
               placeholderTextColor={DesignColors.dark.muted}
             />
-            <Text style={styles.suffix}>days</Text>
+            <Text style={styles.suffix}>minutes</Text>
           </View>
           <Text style={styles.helperText}>
-            Market will expire on: {new Date(expirationTimestamp * 1000).toLocaleDateString()}
+            Market will expire on: {new Date(expirationTimestamp * 1000).toLocaleString()}
+            {parseInt(expirationMinutes || '0') >= 60 && (
+              <Text> ({Math.floor(parseInt(expirationMinutes || '0') / 60)} hour{Math.floor(parseInt(expirationMinutes || '0') / 60) !== 1 ? 's' : ''})</Text>
+            )}
           </Text>
         </View>
 
@@ -202,6 +265,12 @@ export default function CreateMarketScreen() {
         <Card variant="elevated" style={styles.summaryCard}>
           <Text style={styles.summaryTitle}>Market Summary</Text>
           <View style={styles.summaryRow}>
+            <Text style={styles.summaryLabel}>Direction:</Text>
+            <Text style={styles.summaryValue}>
+              {isAboveThreshold ? 'Above' : 'Below'} Threshold
+            </Text>
+          </View>
+          <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Threshold:</Text>
             <Text style={styles.summaryValue}>
               ${threshold ? parseFloat(threshold).toLocaleString() : '0'}
@@ -210,7 +279,7 @@ export default function CreateMarketScreen() {
           <View style={styles.summaryRow}>
             <Text style={styles.summaryLabel}>Expiration:</Text>
             <Text style={styles.summaryValue}>
-              {new Date(expirationTimestamp * 1000).toLocaleDateString()}
+              {new Date(expirationTimestamp * 1000).toLocaleString()}
             </Text>
           </View>
           <View style={styles.summaryRow}>
@@ -243,10 +312,10 @@ export default function CreateMarketScreen() {
           disabled={
             isCreating ||
             !threshold ||
-            !expirationDays ||
+            !expirationMinutes ||
             !initialLiquidity ||
             parseFloat(threshold) <= 0 ||
-            parseFloat(expirationDays) <= 0 ||
+            parseInt(expirationMinutes) <= 0 ||
             parseFloat(initialLiquidity) <= 0 ||
             parseFloat(initialLiquidity) > musdBalance
           }
@@ -351,6 +420,33 @@ const styles = StyleSheet.create({
     color: DesignColors.dark.muted,
     fontSize: Typography.body.md.fontSize,
     marginLeft: Spacing.sm,
+  },
+  directionSelector: {
+    flexDirection: 'row',
+    gap: Spacing.sm,
+  },
+  directionButton: {
+    flex: 1,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.lg,
+    borderRadius: Radius.md,
+    backgroundColor: DesignColors.dark.secondary,
+    borderWidth: 2,
+    borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  directionButtonActive: {
+    backgroundColor: DesignColors.yellow.primary + '20',
+    borderColor: DesignColors.yellow.primary,
+  },
+  directionButtonText: {
+    color: DesignColors.dark.muted,
+    fontSize: Typography.body.md.fontSize,
+    fontWeight: '600',
+  },
+  directionButtonTextActive: {
+    color: DesignColors.yellow.primary,
   },
   helperText: {
     color: DesignColors.dark.muted,
