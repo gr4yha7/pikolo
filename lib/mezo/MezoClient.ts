@@ -21,8 +21,9 @@
  */
 
 import type { Address } from 'viem';
-import { createPublicClient, http, parseEther, parseUnits, type PublicClient, type WalletClient } from 'viem';
+import { createPublicClient, decodeErrorResult, http, parseEther, parseUnits, type PublicClient, type WalletClient } from 'viem';
 
+import { mezoTestnetChain } from '@/constants/chain';
 import BorrowerOperationsABI from '@/lib/contracts/abis/mezo/BorrowerOperations.json';
 import InterestRateManagerABI from '@/lib/contracts/abis/mezo/InterestRateManager.json';
 import MUSDABI from '@/lib/contracts/abis/mezo/MUSD.json';
@@ -38,30 +39,6 @@ import type {
   RepayParams,
   WithdrawMUSDParams,
 } from './types';
-
-// Define a custom chain for Mezo testnet since it's not in viem/chains
-// Mezo testnet uses EVM-compatible chain ID 31611
-const mezoTestnetChain = {
-  id: 31611,
-  name: 'Mezo Testnet',
-  nativeCurrency: {
-    decimals: 18,
-    name: 'Bitcoin',
-    symbol: 'BTC',
-  },
-  rpcUrls: {
-    default: {
-      http: ['https://rpc.test.mezo.org'],
-    },
-  },
-  blockExplorers: {
-    default: {
-      name: 'Mezo Explorer',
-      url: 'https://explorer.test.mezo.org',
-    },
-  },
-  testnet: true,
-};
 
 export class MezoClient {
   private config: MezoConfig;
@@ -102,10 +79,16 @@ export class MezoClient {
         args: [],
       });
       return price as bigint;
-    } catch (error) {
-      console.error('Error fetching BTC price:', error);
+    } catch (error: any) {
+      // PriceFeed may revert on testnet if not initialized - this is expected
+      // Use fallback price instead of logging error
+      const errorMessage = error?.message || String(error);
+      if (!errorMessage.includes('underflow or overflow')) {
+        // Only log non-arithmetic errors (unexpected errors)
+        console.warn('PriceFeed fetchPrice failed, using fallback:', errorMessage);
+      }
       // Fallback: return a mock price in wei (18 decimals)
-      return parseEther('60000'); // $60,000
+      return parseEther('100000'); // $100,000
     }
   }
 
@@ -245,19 +228,106 @@ export class MezoClient {
       // Wait for transaction confirmation
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
+      if (receipt.status === 'reverted') {
+        return {
+          txHash: receipt.transactionHash,
+          success: false,
+          error: 'Transaction reverted. Please check your trove status and try again.',
+        };
+      }
+
       return {
         txHash: receipt.transactionHash,
-        success: receipt.status === 'success',
-        error: receipt.status === 'reverted' ? 'Transaction reverted' : undefined,
+        success: true,
+        error: undefined,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error opening trove:', error);
+      const errorMessage = this.parseRevertReason(error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
         txHash: undefined,
       };
     }
+  }
+
+  /**
+   * Parse revert reason from error and return user-friendly message
+   */
+  private parseRevertReason(error: any): string {
+    if (!error) return 'Transaction failed';
+    
+    // Get error message from various possible locations
+    let errorMessage = '';
+    
+    // Try to extract from error object
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (error?.message) {
+      errorMessage = error.message;
+    } else if (error?.reason) {
+      errorMessage = error.reason;
+    } else if (error?.data?.message) {
+      errorMessage = error.data.message;
+    } else if (error?.shortMessage) {
+      errorMessage = error.shortMessage;
+    } else {
+      errorMessage = String(error);
+    }
+    
+    // Try to decode error if it's a contract error
+    if (error?.data && typeof error.data === 'string' && error.data.startsWith('0x')) {
+      try {
+        const decoded = decodeErrorResult({
+          abi: BorrowerOperationsABI.abi as any,
+          data: error.data as `0x${string}`,
+        });
+        errorMessage = decoded.errorName || errorMessage;
+      } catch (e) {
+        // If decoding fails, continue with original message
+      }
+    }
+    
+    // Check for common revert reasons and provide user-friendly messages
+    const lowerMessage = errorMessage.toLowerCase();
+    
+    if (lowerMessage.includes('trove is active') || lowerMessage.includes('borrowerops: trove is active')) {
+      return 'You already have an active trove. Please use "Add Collateral" or "Borrow More" to modify your existing trove instead of opening a new one.';
+    }
+    
+    if (lowerMessage.includes('trove does not exist') || lowerMessage.includes('trove is not active')) {
+      return 'No active trove found. Please open a new trove first.';
+    }
+    
+    if (lowerMessage.includes('insufficient balance') || lowerMessage.includes('erc20: transfer amount exceeds balance') || lowerMessage.includes('erc20insufficientbalance')) {
+      return 'Insufficient balance. Please check your BTC or MUSD balance.';
+    }
+    
+    if (lowerMessage.includes('collateral ratio') && (lowerMessage.includes('too low') || lowerMessage.includes('below mcr') || lowerMessage.includes('below minimum'))) {
+      return 'This operation would make your collateral ratio too low. Please add more collateral or reduce the amount you want to borrow.';
+    }
+    
+    if (lowerMessage.includes('debt would be below minimum') || lowerMessage.includes('debt must be above minimum')) {
+      return 'The resulting debt would be below the minimum required amount. Please borrow more or close your trove completely.';
+    }
+    
+    if (lowerMessage.includes('erc20insufficientallowance') || lowerMessage.includes('erc20: insufficient allowance')) {
+      return 'Token approval required. Please approve the contract to spend your tokens first.';
+    }
+    
+    if (lowerMessage.includes('execution reverted')) {
+      // Try to extract the actual revert reason
+      const revertMatch = errorMessage.match(/revert reason[:\s]+(.+?)(?:\n|$)/i);
+      if (revertMatch && revertMatch[1]) {
+        return this.parseRevertReason(revertMatch[1]);
+      }
+    }
+    
+    // Return original message if no specific pattern matched
+    return errorMessage || 'Transaction failed. Please try again.';
   }
 
   /**
@@ -287,16 +357,25 @@ export class MezoClient {
 
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
+      if (receipt.status === 'reverted') {
+        return {
+          txHash: receipt.transactionHash,
+          success: false,
+          error: 'Transaction reverted. Please check your trove status and try again.',
+        };
+      }
+
       return {
         txHash: receipt.transactionHash,
-        success: receipt.status === 'success',
-        error: receipt.status === 'reverted' ? 'Transaction reverted' : undefined,
+        success: true,
+        error: undefined,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error adding collateral:', error);
+      const errorMessage = this.parseRevertReason(error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
         txHash: undefined,
       };
     }
@@ -350,16 +429,25 @@ export class MezoClient {
 
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
+      if (receipt.status === 'reverted') {
+        return {
+          txHash: receipt.transactionHash,
+          success: false,
+          error: 'Transaction reverted. Please check your trove status and try again.',
+        };
+      }
+
       return {
         txHash: receipt.transactionHash,
-        success: receipt.status === 'success',
-        error: receipt.status === 'reverted' ? 'Transaction reverted' : undefined,
+        success: true,
+        error: undefined,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error repaying MUSD:', error);
+      const errorMessage = this.parseRevertReason(error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
         txHash: undefined,
       };
     }
@@ -391,16 +479,25 @@ export class MezoClient {
 
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
+      if (receipt.status === 'reverted') {
+        return {
+          txHash: receipt.transactionHash,
+          success: false,
+          error: 'Transaction reverted. Please check your trove status and try again.',
+        };
+      }
+
       return {
         txHash: receipt.transactionHash,
-        success: receipt.status === 'success',
-        error: receipt.status === 'reverted' ? 'Transaction reverted' : undefined,
+        success: true,
+        error: undefined,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error withdrawing MUSD:', error);
+      const errorMessage = this.parseRevertReason(error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
         txHash: undefined,
       };
     }

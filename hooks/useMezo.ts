@@ -6,10 +6,12 @@ import { MezoClient } from '@/lib/mezo/MezoClient';
 import type { CollateralInfo } from '@/lib/mezo/types';
 import { useAccount } from '@reown/appkit-react-native';
 import { useEffect, useState } from 'react';
-import type { Address } from 'viem';
+import type { Address, WalletClient } from 'viem';
+import { useWalletClient } from 'wagmi';
 
 export function useMezo() {
   const { address, isConnected } = useAccount();
+  const { data: walletClient } = useWalletClient();
   const [mezoClient, setMezoClient] = useState<MezoClient | null>(null);
   const [collateralInfo, setCollateralInfo] = useState<CollateralInfo | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -53,10 +55,13 @@ export function useMezo() {
       chainId,
     });
 
-    // Note: Wallet client would be set when making transactions
-    // For read operations, we only need publicClient which is set in constructor
+    // Set wallet client if available (for write operations)
+    if (walletClient) {
+      client.setWalletClient(walletClient as WalletClient);
+    }
+
     setMezoClient(client);
-  }, [address, isConnected]);
+  }, [address, isConnected, walletClient]);
 
   // Fetch collateral info
   const fetchCollateralInfo = async () => {
@@ -78,6 +83,13 @@ export function useMezo() {
       setIsLoading(false);
     }
   };
+
+  // Update wallet client when it becomes available
+  useEffect(() => {
+    if (mezoClient && walletClient) {
+      mezoClient.setWalletClient(walletClient as WalletClient);
+    }
+  }, [mezoClient, walletClient]);
 
   // Fetch collateral info when client is ready
   useEffect(() => {
