@@ -18,12 +18,8 @@ Pikolo is a mobile-first predictions market application that enables users to bo
 - **Portfolio Tracking**: View open and closed positions with performance metrics
 - **Mobile-First Design**: Native iOS/Android experience optimized for quick trading
 
-## Screenshots
-
-- Home screen with active prediction markets
-- Borrowing power calculator
-- Loan dashboard with comprehensive metrics
-- Trading interface for buying/selling shares
+## Demo Video
+https://drive.google.com/file/d/1ZMAv2szgswUSfABszg_Vqy_RnPa5NrsJ/view?usp=sharing
 
 ## How It Works
 
