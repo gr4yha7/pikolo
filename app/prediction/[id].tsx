@@ -5,15 +5,14 @@ import { DesignColors, Radius, Spacing, Typography } from '@/constants/theme';
 import { usePredictionMarket } from '@/hooks/usePredictionMarket';
 import { formatShares } from '@/utils/format-shares';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator, Alert, Dimensions,
   ScrollView,
   StatusBar,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View
 } from 'react-native';
 import { BarChart, LineChart } from 'react-native-chart-kit';
@@ -32,12 +31,24 @@ export default function PredictionDetailScreen() {
     marketData,
     reserves,
     userPosition,
+    totalVolume: contractTotalVolume,
     isLoading,
     error,
     getSharePrice,
     fetchMarketData,
+    fetchUserPosition,
     resolveMarket,
   } = usePredictionMarket(marketAddress || null);
+
+  // Refresh market data when screen comes into focus (e.g., after buy/sell)
+  useFocusEffect(
+    useCallback(() => {
+      if (marketAddress) {
+        fetchMarketData();
+        fetchUserPosition();
+      }
+    }, [marketAddress, fetchMarketData, fetchUserPosition])
+  );
 
   // Calculate probabilities and prices
   const [yesProbability, noProbability, yesPrice, noPrice] = useMemo(() => {
@@ -92,9 +103,9 @@ export default function PredictionDetailScreen() {
     }
   }
 
-  // Total volume (simplified - would come from events in production)
-  const totalVolume = reserves
-    ? formatEther(reserves.reserveYes + reserves.reserveNo)
+  // Total volume from contract
+  const totalVolume = contractTotalVolume
+    ? formatEther(contractTotalVolume)
     : '0';
 
   // Get isAboveThreshold from metadata
@@ -300,7 +311,7 @@ export default function PredictionDetailScreen() {
                 labels: ['Yes', 'No'],
                 datasets: [
                   {
-                    data: [yesProbability, noProbability],
+                    data: [Number(yesProbability.toFixed(1)), Number(noProbability.toFixed(1))],
                   },
                 ],
               }}
@@ -471,6 +482,7 @@ export default function PredictionDetailScreen() {
           ) : !isExpired && !isResolved ? (
             // Show buy/sell buttons if not expired and not resolved
             <View style={styles.actionButtons}>
+              {/* Yes Column */}
               <View style={styles.actionButtonContainer}>
                 <Button
                   title="Buy Yes"
@@ -486,14 +498,24 @@ export default function PredictionDetailScreen() {
                     </View>
                   }
                 />
-                {userYesShares > 0n && (
-                  <TouchableOpacity
-                    style={styles.sellButton}
-                    onPress={handleSellYes}>
-                    <Text style={styles.sellButtonText}>Sell</Text>
-                  </TouchableOpacity>
+                {userYesShares > 0n ? (
+                  <Button
+                    title={`Sell ${formatShares(userYesShares)} shares`}
+                    onPress={handleSellYes}
+                    variant="outline"
+                    size="md"
+                    style={styles.sellButtonFull}
+                    textStyle={styles.sellButtonText}
+                    leftIcon={
+                      <Ionicons name="arrow-down" size={16} color={DesignColors.error} />
+                    }
+                  />
+                ) : (
+                  <View style={styles.sellButtonPlaceholder} />
                 )}
               </View>
+              
+              {/* No Column */}
               <View style={styles.actionButtonContainer}>
                 <Button
                   title="Buy No"
@@ -509,12 +531,20 @@ export default function PredictionDetailScreen() {
                     </View>
                   }
                 />
-                {userNoShares > 0n && (
-                  <TouchableOpacity
-                    style={styles.sellButton}
-                    onPress={handleSellNo}>
-                    <Text style={styles.sellButtonText}>Sell</Text>
-                  </TouchableOpacity>
+                {userNoShares > 0n ? (
+                  <Button
+                    title={`Sell ${formatShares(userNoShares)} shares`}
+                    onPress={handleSellNo}
+                    variant="outline"
+                    size="md"
+                    style={styles.sellButtonFull}
+                    textStyle={styles.sellButtonText}
+                    leftIcon={
+                      <Ionicons name="arrow-down" size={16} color={DesignColors.error} />
+                    }
+                  />
+                ) : (
+                  <View style={styles.sellButtonPlaceholder} />
                 )}
               </View>
             </View>
@@ -687,6 +717,7 @@ const styles = StyleSheet.create({
   },
   actionButtonContainer: {
     flex: 1,
+    gap: Spacing.sm,
   },
   actionButton: {
     flex: 1,
@@ -716,15 +747,15 @@ const styles = StyleSheet.create({
     fontSize: Typography.caption.md.fontSize,
     fontWeight: '700',
   },
-  sellButton: {
-    marginTop: Spacing.xs,
-    alignItems: 'center',
-    paddingVertical: Spacing.xs,
+  sellButtonFull: {
+    borderColor: DesignColors.error,
+    borderWidth: 1.5,
   },
   sellButtonText: {
     color: DesignColors.error,
-    fontSize: Typography.body.sm.fontSize,
-    fontWeight: '600',
+  },
+  sellButtonPlaceholder: {
+    height: 48, // Match button height to maintain consistent spacing
   },
   loadingContainer: {
     flex: 1,

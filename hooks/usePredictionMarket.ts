@@ -24,6 +24,7 @@ export function usePredictionMarket(marketAddress: Address | null) {
   const [marketData, setMarketData] = useState<MarketData | null>(null);
   const [reserves, setReserves] = useState<{ reserveYes: bigint; reserveNo: bigint } | null>(null);
   const [userPosition, setUserPosition] = useState<UserPosition | null>(null);
+  const [totalVolume, setTotalVolume] = useState<bigint | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -60,13 +61,15 @@ export function usePredictionMarket(marketAddress: Address | null) {
       setIsLoading(true);
       setError(null);
 
-      const [data, reservesData] = await Promise.all([
+      const [data, reservesData, volume] = await Promise.all([
         marketClient.getMarketData(),
         marketClient.getReserves(),
+        marketClient.getTotalVolume(),
       ]);
 
       setMarketData(data);
       setReserves(reservesData);
+      setTotalVolume(volume);
     } catch (err) {
       const errorMessage =
         err instanceof Error ? err.message : 'Failed to fetch market data';
@@ -278,6 +281,7 @@ export function usePredictionMarket(marketAddress: Address | null) {
     marketData,
     reserves,
     userPosition,
+    totalVolume,
     isLoading,
     error,
     buyShares,
