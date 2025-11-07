@@ -12,7 +12,7 @@ import { useWallet } from '@/hooks/use-wallet';
 import { useAppDispatch } from '@/hooks/useAppDispatch';
 import { useAppSelector } from '@/hooks/useAppSelector';
 import { useMezo } from '@/hooks/useMezo';
-import { calculateOpenTroveHints, getExpectedTotalDebt } from '@/utils/mezo-hints';
+import { calculateOpenTroveHints, calculateAdjustTroveHints, getExpectedTotalDebt } from '@/utils/mezo-hints';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useEffect, useState } from 'react';
@@ -27,7 +27,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { parseEther, parseUnits } from 'viem';
+import { formatEther, parseEther, parseUnits } from 'viem';
 
 export default function BorrowScreen() {
   const router = useRouter();
@@ -61,26 +61,33 @@ export default function BorrowScreen() {
     fetchBTCPrice();
   }, [mezoClient, wallet.evmAddress]);
 
-  // Calculate MUSD amount based on BTC amount and LTV
+  // Check if user has existing trove
+  const hasExistingTrove = collateralInfo && parseFloat(collateralInfo.btcCollateral) > 0;
+  const currentDebt = hasExistingTrove ? parseFloat(collateralInfo.borrowedMUSD || '0') : 0;
+  const maxBorrowable = hasExistingTrove ? parseFloat(collateralInfo.maxBorrowable || '0') : 0;
+  const availableToBorrow = Math.max(0, maxBorrowable - currentDebt);
+
+  // Calculate MUSD amount based on BTC amount and LTV (only for new troves)
   useEffect(() => {
-    if (btcAmount && ltv > 0) {
+    if (!hasExistingTrove && btcAmount && ltv > 0) {
       const btcValue = parseFloat(btcAmount) * btcPrice;
       const calculatedMUSD = (btcValue * ltv) / 100;
       setMusdAmount(calculatedMUSD.toFixed(2));
-    } else {
+    } else if (!hasExistingTrove && !btcAmount) {
       setMusdAmount('');
     }
-  }, [btcAmount, ltv, btcPrice]);
+  }, [btcAmount, ltv, btcPrice, hasExistingTrove]);
 
-  // Calculate BTC amount based on MUSD and LTV
+  // Calculate BTC amount based on MUSD and LTV (only for new troves)
   useEffect(() => {
-    if (musdAmount && ltv > 0) {
+    if (!hasExistingTrove && musdAmount && ltv > 0) {
       const calculatedBTC = parseFloat(musdAmount) / (btcPrice * (ltv / 100));
       setBtcAmount(calculatedBTC.toFixed(8));
     }
-  }, [musdAmount, ltv, btcPrice]);
+  }, [musdAmount, ltv, btcPrice, hasExistingTrove]);
 
   const handleLTVChange = (value: number) => {
+    if (hasExistingTrove) return; // LTV only applies to new troves
     setLtv(value);
     // Recalculate MUSD based on BTC
     if (btcAmount) {
@@ -91,6 +98,7 @@ export default function BorrowScreen() {
   };
 
   const handleBTCAmountChange = (text: string) => {
+    if (hasExistingTrove) return; // BTC input only for new troves
     setBtcAmount(text);
     if (ltv > 0) {
       const numValue = parseFloat(text);
@@ -104,7 +112,8 @@ export default function BorrowScreen() {
 
   const handleMUSDAmountChange = (text: string) => {
     setMusdAmount(text);
-    if (ltv > 0) {
+    // Only auto-calculate BTC for new troves
+    if (!hasExistingTrove && ltv > 0) {
       const numValue = parseFloat(text);
       if (!isNaN(numValue)) {
         const calculatedBTC = numValue / (btcPrice * (ltv / 100));
@@ -124,61 +133,123 @@ export default function BorrowScreen() {
       return;
     }
 
-    if (!btcAmount || !musdAmount) {
-      Alert.alert('Invalid Amount', 'Please enter both BTC collateral and MUSD amount');
+    if (!musdAmount || parseFloat(musdAmount) <= 0) {
+      Alert.alert('Invalid Amount', 'Please enter MUSD amount to borrow');
       return;
+    }
+
+    // For new troves, require BTC collateral
+    if (!hasExistingTrove && (!btcAmount || parseFloat(btcAmount) <= 0)) {
+      Alert.alert('Invalid Amount', 'Please enter BTC collateral amount');
+      return;
+    }
+
+    // For existing troves, check if borrowing more exceeds max
+    if (hasExistingTrove) {
+      // Get expected total debt including fees (for validation)
+      const musdAmountBigInt = parseEther(musdAmount);
+      const expectedTotalDebt = await getExpectedTotalDebt(
+        mezoClient.getConfig(),
+        musdAmountBigInt,
+        mezoClient.getPublicClient(),
+      );
+      const newTotalDebt = currentDebt + Number(formatEther(expectedTotalDebt));
+      
+      if (newTotalDebt > maxBorrowable) {
+        Alert.alert('Exceeds Maximum', `You can only borrow up to ${availableToBorrow.toFixed(2)} MUSD more (including fees). Maximum total debt: ${maxBorrowable.toFixed(2)} MUSD`);
+        return;
+      }
     }
 
     setIsBorrowing(true);
     setCalculatingHints(true);
 
     try {
-      // Convert to bigint - BTC on Mezo has 18 decimals (native currency), MUSD has 18 decimals
-      const btcAmountBigInt = parseUnits(btcAmount, 18);
       const musdAmountBigInt = parseEther(musdAmount);
 
-      // Get expected total debt (includes gas compensation and borrowing fee)
-      const expectedTotalDebt = await getExpectedTotalDebt(
-        mezoClient.getConfig(),
-        musdAmountBigInt,
-        mezoClient.getPublicClient(),
-      );
+      if (hasExistingTrove) {
+        // Borrow more from existing trove (no additional collateral needed)
+        const currentCollateral = parseEther(collateralInfo.btcCollateral || '0');
+        const newTotalDebt = parseEther((currentDebt + parseFloat(musdAmount)).toFixed(2));
 
-      // Calculate hints for the transaction
-      const hints = await calculateOpenTroveHints(
-        mezoClient.getConfig(),
-        btcAmountBigInt,
-        expectedTotalDebt,
-        mezoClient.getPublicClient(),
-      );
+        // Calculate hints for adjusting trove
+        const hints = await calculateAdjustTroveHints(
+          mezoClient.getConfig(),
+          currentCollateral,
+          newTotalDebt,
+          mezoClient.getPublicClient(),
+        );
 
-      setCalculatingHints(false);
+        setCalculatingHints(false);
 
-      // Call openTrove with hints
-      const result = await mezoClient.openTrove({
-        btcAmount: btcAmountBigInt,
-        musdAmount: musdAmountBigInt,
-        upperHint: hints.upperHint,
-        lowerHint: hints.lowerHint,
-      });
+        // Call withdrawMUSD to borrow more
+        const result = await mezoClient.withdrawMUSD({
+          musdAmount: musdAmountBigInt,
+          upperHint: hints.upperHint,
+          lowerHint: hints.lowerHint,
+        });
 
-      if (result.success) {
-        Alert.alert('Success', `Successfully borrowed ${musdAmount} MUSD`, [
-          {
-            text: 'OK',
-            onPress: () => {
-              setBtcAmount('');
-              setMusdAmount('');
-              setLtv(0);
-              refetch();
-              router.back();
+        if (result.success) {
+          Alert.alert('Success', `Successfully borrowed ${musdAmount} MUSD more`, [
+            {
+              text: 'OK',
+              onPress: async () => {
+                setMusdAmount('');
+                await refetch();
+                router.back();
+              },
             },
-          },
-        ]);
+          ]);
+        } else {
+          const errorMessage = result.error || 'Failed to borrow more MUSD';
+          Alert.alert('Transaction Failed', errorMessage);
+        }
       } else {
-        // Show user-friendly error message
-        const errorMessage = result.error || 'Failed to borrow MUSD';
-        Alert.alert('Transaction Failed', errorMessage);
+        // Open new trove (requires BTC collateral)
+        const btcAmountBigInt = parseUnits(btcAmount, 18);
+
+        // Get expected total debt (includes gas compensation and borrowing fee)
+        const expectedTotalDebt = await getExpectedTotalDebt(
+          mezoClient.getConfig(),
+          musdAmountBigInt,
+          mezoClient.getPublicClient(),
+        );
+
+        // Calculate hints for the transaction
+        const hints = await calculateOpenTroveHints(
+          mezoClient.getConfig(),
+          btcAmountBigInt,
+          expectedTotalDebt,
+          mezoClient.getPublicClient(),
+        );
+
+        setCalculatingHints(false);
+
+        // Call openTrove with hints
+        const result = await mezoClient.openTrove({
+          btcAmount: btcAmountBigInt,
+          musdAmount: musdAmountBigInt,
+          upperHint: hints.upperHint,
+          lowerHint: hints.lowerHint,
+        });
+
+        if (result.success) {
+          Alert.alert('Success', `Successfully borrowed ${musdAmount} MUSD`, [
+            {
+              text: 'OK',
+              onPress: async () => {
+                setBtcAmount('');
+                setMusdAmount('');
+                setLtv(0);
+                await refetch();
+                router.back();
+              },
+            },
+          ]);
+        } else {
+          const errorMessage = result.error || 'Failed to borrow MUSD';
+          Alert.alert('Transaction Failed', errorMessage);
+        }
       }
     } catch (error) {
       setCalculatingHints(false);
@@ -190,7 +261,9 @@ export default function BorrowScreen() {
     }
   };
 
-  const canBorrow = btcAmount && musdAmount && ltv > 0 && ltv <= maxLTV && !isBorrowing;
+  const canBorrow = hasExistingTrove
+    ? musdAmount && parseFloat(musdAmount) > 0 && (currentDebt + parseFloat(musdAmount)) <= maxBorrowable && !isBorrowing
+    : btcAmount && musdAmount && ltv > 0 && ltv <= maxLTV && !isBorrowing;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -219,17 +292,19 @@ export default function BorrowScreen() {
             <Text style={styles.infoTitle}>Borrow MUSD</Text>
           </View>
           <Text style={styles.infoText}>
-            Deposit BTC collateral to borrow MUSD. Maximum LTV is ~90.91% (110% MCR). Interest rate
-            is governable.
+            {hasExistingTrove 
+              ? `Borrow more MUSD from your existing trove. You can borrow up to ${availableToBorrow.toFixed(2)} MUSD more without adding collateral.`
+              : 'Deposit BTC collateral to borrow MUSD. Maximum LTV is ~90.91% (110% MCR). Interest rate is governable.'}
           </Text>
           <View style={styles.rateBadge}>
             <Text style={styles.rateText}>Gas Compensation: 200 MUSD</Text>
           </View>
         </Card>
 
-        {/* BTC Amount Input */}
-        <Card variant="elevated" style={styles.inputCard}>
-          <Text style={styles.inputLabel}>BTC Collateral</Text>
+        {/* BTC Amount Input - Only show for new troves */}
+        {!hasExistingTrove && (
+          <Card variant="elevated" style={styles.inputCard}>
+            <Text style={styles.inputLabel}>BTC Collateral</Text>
           <View style={styles.inputContainer}>
             <TextInput
               style={styles.input}
@@ -247,9 +322,11 @@ export default function BorrowScreen() {
             ≈ ${btcAmount ? (parseFloat(btcAmount) * btcPrice).toFixed(2) : '0.00'} USD
           </Text>
         </Card>
+        )}
 
-        {/* LTV Slider */}
-        <Card variant="elevated" style={styles.sliderCard}>
+        {/* LTV Slider - Only show for new troves */}
+        {!hasExistingTrove && (
+          <Card variant="elevated" style={styles.sliderCard}>
           <View style={styles.sliderHeader}>
             <Text style={styles.inputLabel}>Loan-to-Value (LTV)</Text>
             <Text style={styles.ltvValue}>{ltv.toFixed(1)}%</Text>
@@ -272,6 +349,7 @@ export default function BorrowScreen() {
           </View>
           <Text style={styles.inputSubtext}>Maximum LTV: {maxLTV.toFixed(2)}%</Text>
         </Card>
+        )}
 
         {/* MUSD Amount Input */}
         <Card variant="elevated" style={styles.inputCard}>
@@ -290,31 +368,55 @@ export default function BorrowScreen() {
               <Text style={styles.suffixText}>MUSD</Text>
             </View>
           </View>
-          <Text style={styles.inputSubtext}>
-            Note: Borrowing fee and gas compensation (200 MUSD) will be added to your debt
-          </Text>
+          {hasExistingTrove ? (
+            <Text style={styles.inputSubtext}>
+              Available to borrow: {availableToBorrow.toFixed(2)} MUSD (max: {maxBorrowable.toFixed(2)} MUSD total)
+            </Text>
+          ) : (
+            <Text style={styles.inputSubtext}>
+              Note: Borrowing fee and gas compensation (200 MUSD) will be added to your debt
+            </Text>
+          )}
         </Card>
 
         {/* Summary Card */}
-        {btcAmount && musdAmount && (
+        {((!hasExistingTrove && btcAmount && musdAmount) || (hasExistingTrove && musdAmount)) && (
           <Card variant="elevated" style={styles.summaryCard}>
             <Text style={styles.summaryTitle}>Borrow Summary</Text>
+            {!hasExistingTrove && (
+              <>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>BTC Collateral:</Text>
+                  <Text style={styles.summaryValue}>{btcAmount} BTC</Text>
+                </View>
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryLabel}>LTV:</Text>
+                  <Text style={styles.summaryValue}>{ltv.toFixed(1)}%</Text>
+                </View>
+              </>
+            )}
+            {hasExistingTrove && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Current Debt:</Text>
+                <Text style={styles.summaryValue}>{currentDebt.toFixed(2)} MUSD</Text>
+              </View>
+            )}
             <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>BTC Collateral:</Text>
-              <Text style={styles.summaryValue}>{btcAmount} BTC</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>MUSD Borrowed:</Text>
+              <Text style={styles.summaryLabel}>MUSD to Borrow:</Text>
               <Text style={styles.summaryValue}>{musdAmount} MUSD</Text>
             </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>LTV:</Text>
-              <Text style={styles.summaryValue}>{ltv.toFixed(1)}%</Text>
-            </View>
-            <View style={styles.summaryRow}>
-              <Text style={styles.summaryLabel}>Gas Compensation:</Text>
-              <Text style={styles.summaryValue}>200 MUSD</Text>
-            </View>
+            {hasExistingTrove && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>New Total Debt:</Text>
+                <Text style={styles.summaryValue}>{(currentDebt + parseFloat(musdAmount)).toFixed(2)} MUSD</Text>
+              </View>
+            )}
+            {!hasExistingTrove && (
+              <View style={styles.summaryRow}>
+                <Text style={styles.summaryLabel}>Gas Compensation:</Text>
+                <Text style={styles.summaryValue}>200 MUSD</Text>
+              </View>
+            )}
           </Card>
         )}
 
@@ -324,8 +426,8 @@ export default function BorrowScreen() {
             calculatingHints
               ? 'Calculating...'
               : isBorrowing
-                ? 'Opening Trove...'
-                : 'Open Trove & Borrow MUSD'
+                ? (hasExistingTrove ? 'Borrowing More...' : 'Opening Trove...')
+                : (hasExistingTrove ? 'Borrow More MUSD' : 'Open Trove & Borrow MUSD')
           }
           onPress={handleBorrow}
           variant="primary"
