@@ -224,13 +224,16 @@ export default function RepayDebtScreen() {
       });
 
       if (result.success) {
+        // Wait a bit for blockchain state to update, then refresh
+        await new Promise(resolve => setTimeout(resolve, 2000)); // 2 second delay
+        await refetch();
+        await refreshBalances();
+        
         Alert.alert('Success', `Successfully repaid ${musdAmount} MUSD`, [
           {
             text: 'OK',
-            onPress: async () => {
+            onPress: () => {
               setMusdAmount('');
-              await refreshBalances();
-              refetch();
               router.back();
             },
           },

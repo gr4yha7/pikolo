@@ -5,7 +5,7 @@
 import { MezoClient } from '@/lib/mezo/MezoClient';
 import type { CollateralInfo } from '@/lib/mezo/types';
 import { useAccount } from '@reown/appkit-react-native';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { Address, WalletClient } from 'viem';
 import { useWalletClient } from 'wagmi';
 
@@ -63,8 +63,8 @@ export function useMezo() {
     setMezoClient(client);
   }, [address, isConnected, walletClient]);
 
-  // Fetch collateral info
-  const fetchCollateralInfo = async () => {
+  // Fetch collateral info (memoized to prevent infinite loops)
+  const fetchCollateralInfo = useCallback(async () => {
     if (!mezoClient || !address) {
       return;
     }
@@ -82,7 +82,7 @@ export function useMezo() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [mezoClient, address]);
 
   // Update wallet client when it becomes available
   useEffect(() => {
@@ -96,7 +96,7 @@ export function useMezo() {
     if (mezoClient && address) {
       fetchCollateralInfo();
     }
-  }, [mezoClient, address]);
+  }, [mezoClient, address, fetchCollateralInfo]);
 
   return {
     mezoClient,

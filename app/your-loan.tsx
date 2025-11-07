@@ -13,8 +13,9 @@ import { useWallet } from '@/hooks/use-wallet';
 import { useMezo } from '@/hooks/useMezo';
 import { calculateLiquidationPriceBuffer, calculateLiquidationPriceFromDebt, formatBTC, formatUSD } from '@/utils/loan-calculations';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useEffect, useMemo, useState } from 'react';
+import { useFocusEffect, useRouter } from 'expo-router';
+import { openBrowserAsync, WebBrowserPresentationStyle } from 'expo-web-browser';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   ScrollView,
@@ -25,11 +26,13 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { formatEther } from 'viem';
 
 interface Transaction {
   id: string;
   type: 'loan_issued' | 'collateral_added' | 'debt_repaid' | 'debt_withdrawn' | 'trove_closed';
   amount: string;
+  amountUnit: 'MUSD' | 'BTC';
   timestamp: number;
   txHash?: string;
   description: string;
@@ -45,6 +48,16 @@ export default function YourLoanScreen() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loadingTransactions, setLoadingTransactions] = useState(false);
   const [showManageMenu, setShowManageMenu] = useState(false);
+
+  // Refresh collateral info when screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      if (wallet.isConnected && refetch) {
+        refetch();
+      }
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [wallet.isConnected]) // Only depend on wallet.isConnected to avoid infinite loops
+  );
 
   // Fetch BTC price and interest rate
   useEffect(() => {
@@ -64,6 +77,39 @@ export default function YourLoanScreen() {
     fetchData();
   }, [mezoClient]);
 
+  // Periodically refresh loan information (BTC price, collateral info, interest)
+  // This is important because:
+  // - BTC price changes affect liquidation price buffer and collateralization ratio
+  // - Interest accrues over time, increasing debt
+  useEffect(() => {
+    if (!mezoClient || !wallet.isConnected || !collateralInfo || parseFloat(collateralInfo.borrowedMUSD) === 0) {
+      return;
+    }
+
+    const POLL_INTERVAL = 60000; // 60 seconds
+
+    const interval = setInterval(async () => {
+      try {
+        // Refresh BTC price (affects liquidation calculations)
+        const price = await mezoClient.getBtcPrice();
+        setBtcPrice(Number(price) / 1e18);
+        
+        // Refresh interest rate (may change)
+        const rate = await mezoClient.getInterestRate();
+        setInterestRate(rate);
+        
+        // Refresh collateral info (debt may have accrued interest, ratio may have changed)
+        if (refetch) {
+          refetch();
+        }
+      } catch (error) {
+        console.error('Error refreshing loan data:', error);
+      }
+    }, POLL_INTERVAL);
+
+    return () => clearInterval(interval);
+  }, [mezoClient, wallet.isConnected, collateralInfo, refetch]);
+
   // Fetch transaction history
   useEffect(() => {
     const fetchTransactions = async () => {
@@ -71,15 +117,136 @@ export default function YourLoanScreen() {
       
       setLoadingTransactions(true);
       try {
-        // TODO: Implement event fetching from TroveUpdated events
-        // For now, use mock data structure
-        // In production, query TroveUpdated events from BorrowerOperations contract
-        const mockTransactions: Transaction[] = [
-          // This will be replaced with real event data
-        ];
-        setTransactions(mockTransactions);
+        console.log('Fetching transactions for:', wallet.evmAddress);
+        const events = await mezoClient.getTroveEvents(wallet.evmAddress as any);
+        console.log(`Fetched ${events.length} events`);
+        
+        // Track previous state to determine operation type
+        let previousColl = BigInt(0);
+        let previousDebt = BigInt(0);
+        
+        const transactions: Transaction[] = [];
+        
+        for (const event of events) {
+          if (event.eventName === 'TroveCreated') {
+            transactions.push({
+              id: event.transactionHash,
+              type: 'loan_issued',
+              amount: '0',
+              amountUnit: 'MUSD', // Will be updated from first TroveUpdated
+              timestamp: event.timestamp,
+              txHash: event.transactionHash,
+              description: 'Trove opened',
+            });
+          } else if (event.eventName === 'TroveUpdated') {
+            const args = event.args as any;
+            const currentColl = args._coll as bigint;
+            const currentDebt = (args._principal as bigint) + (args._interest as bigint);
+            const operation = args._operation as number;
+            
+            // Determine transaction type based on operation and changes
+            let txType: Transaction['type'] = 'loan_issued';
+            let amount = '0';
+            let description = 'Trove updated';
+            
+            const collChange = currentColl - previousColl;
+            const debtChange = currentDebt - previousDebt;
+            
+            // Format amount with proper decimals
+            const formatAmount = (value: bigint, isBTC: boolean): string => {
+              const numValue = Number(formatEther(value));
+              if (isBTC) {
+                // Format BTC with up to 8 decimals, remove trailing zeros
+                return numValue.toFixed(8).replace(/\.?0+$/, '');
+              } else {
+                // Format MUSD with 2 decimals
+                return numValue.toFixed(2);
+              }
+            };
+            
+            let amountUnit: 'MUSD' | 'BTC' = 'MUSD';
+            
+            // Operation codes (based on BorrowerOperations contract):
+            // 0 = openTrove, 1 = closeTrove, 2+ = adjustTrove variations
+            if (operation === 0) {
+              // Open trove
+              txType = 'loan_issued';
+              amount = formatAmount(currentDebt, false);
+              amountUnit = 'MUSD';
+              description = `Borrowed ${formatAmount(currentDebt, false)} MUSD`;
+            } else if (operation === 1) {
+              // Close trove
+              txType = 'trove_closed';
+              amount = formatAmount(previousDebt, false);
+              amountUnit = 'MUSD';
+              description = 'Trove closed';
+            } else if (collChange > 0n && debtChange === 0n) {
+              // Added collateral only
+              txType = 'collateral_added';
+              amount = formatAmount(collChange, true);
+              amountUnit = 'BTC';
+              description = `Added ${formatAmount(collChange, true)} BTC collateral`;
+            } else if (collChange === 0n && debtChange < 0n) {
+              // Repaid debt only
+              txType = 'debt_repaid';
+              amount = formatAmount(-debtChange, false);
+              amountUnit = 'MUSD';
+              description = `Repaid ${formatAmount(-debtChange, false)} MUSD`;
+            } else if (collChange === 0n && debtChange > 0n) {
+              // Borrowed more
+              txType = 'debt_withdrawn';
+              amount = formatAmount(debtChange, false);
+              amountUnit = 'MUSD';
+              description = `Borrowed ${formatAmount(debtChange, false)} MUSD more`;
+            } else if (collChange < 0n && debtChange === 0n) {
+              // Withdrew collateral only
+              txType = 'collateral_added'; // Reuse type, will show as withdrawal
+              amount = formatAmount(-collChange, true);
+              amountUnit = 'BTC';
+              description = `Withdrew ${formatAmount(-collChange, true)} BTC collateral`;
+            } else {
+              // Complex operation (multiple changes)
+              if (debtChange !== 0n) {
+                txType = debtChange > 0n ? 'debt_withdrawn' : 'debt_repaid';
+                amount = formatAmount(debtChange > 0n ? debtChange : -debtChange, false);
+                amountUnit = 'MUSD';
+                description = debtChange > 0n 
+                  ? `Borrowed ${formatAmount(debtChange, false)} MUSD`
+                  : `Repaid ${formatAmount(-debtChange, false)} MUSD`;
+              } else {
+                txType = 'collateral_added';
+                amount = formatAmount(collChange > 0n ? collChange : -collChange, true);
+                amountUnit = 'BTC';
+                description = collChange > 0n
+                  ? `Added ${formatAmount(collChange, true)} BTC collateral`
+                  : `Withdrew ${formatAmount(-collChange, true)} BTC collateral`;
+              }
+            }
+            
+            transactions.push({
+              id: `${event.transactionHash}-${event.blockNumber}`,
+              type: txType,
+              amount,
+              amountUnit,
+              timestamp: event.timestamp,
+              txHash: event.transactionHash,
+              description,
+            });
+            
+            // Update previous state
+            previousColl = currentColl;
+            previousDebt = currentDebt;
+          }
+        }
+        
+        // Sort by timestamp (newest first)
+        transactions.sort((a, b) => b.timestamp - a.timestamp);
+        
+        console.log(`Processed ${transactions.length} transactions`);
+        setTransactions(transactions);
       } catch (error) {
         console.error('Error fetching transactions:', error);
+        setTransactions([]);
       } finally {
         setLoadingTransactions(false);
       }
@@ -224,16 +391,16 @@ export default function YourLoanScreen() {
                   style={styles.menuItem}
                   onPress={() => {
                     setShowManageMenu(false);
-                    router.push('/borrow' as any);
+                    router.push('/withdraw-musd' as any);
                   }}>
-                  <Ionicons name="cash" size={20} color={DesignColors.yellow.primary} />
+                  <Ionicons name="arrow-down-circle" size={20} color={DesignColors.yellow.primary} />
                   <Text style={styles.menuItemText}>Withdraw MUSD</Text>
                 </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.menuItem}
                   onPress={() => {
                     setShowManageMenu(false);
-                    router.push('/borrow' as any);
+                    router.push('/close-trove' as any);
                   }}>
                   <Ionicons name="close-circle" size={20} color={DesignColors.error} />
                   <Text style={[styles.menuItemText, styles.dangerText]}>Close Trove</Text>
@@ -358,13 +525,21 @@ export default function YourLoanScreen() {
                     </View>
                   </View>
                   <View style={styles.transactionRight}>
-                    <Text style={styles.transactionAmount}>+{tx.amount} MUSD</Text>
+                    <Text style={styles.transactionAmount}>
+                      {tx.type === 'debt_repaid' || tx.type === 'trove_closed' ? '-' : '+'}
+                      {tx.amount} {tx.amountUnit}
+                    </Text>
                     {tx.txHash && (
                       <TouchableOpacity
-                        onPress={() => {
-                          // Open in explorer
+                        onPress={async () => {
                           const explorerUrl = `https://explorer.test.mezo.org/tx/${tx.txHash}`;
-                          // TODO: Open URL
+                          try {
+                            await openBrowserAsync(explorerUrl, {
+                              presentationStyle: WebBrowserPresentationStyle.AUTOMATIC,
+                            });
+                          } catch (error) {
+                            console.error('Error opening explorer URL:', error);
+                          }
                         }}>
                         <Text style={styles.receiptLink}>Receipt</Text>
                       </TouchableOpacity>
