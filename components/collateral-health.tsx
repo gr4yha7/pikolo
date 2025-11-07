@@ -67,7 +67,7 @@ export function CollateralHealth({
     <Card variant="elevated" style={styles.card}>
       <View style={styles.header}>
         <View style={styles.headerLeft}>
-          <Ionicons name="shield-checkmark" size={24} color={DesignColors.yellow.primary} />
+          <Ionicons name="shield-checkmark" size={20} color={DesignColors.yellow.primary} />
           <Text style={styles.title}>Collateral Health</Text>
         </View>
         <View style={[styles.statusBadge, { backgroundColor: getHealthColor() + '20' }]}>
@@ -88,22 +88,23 @@ export function CollateralHealth({
 
         <View style={styles.metric}>
           <Text style={styles.metricLabel}>BTC Collateral</Text>
-          <Text style={styles.metricValue}>{btcCollateral} BTC</Text>
+          <Text style={styles.metricValue}>{btcCollateral}</Text>
+          <Text style={styles.metricUnit}>BTC</Text>
         </View>
 
         <View style={styles.divider} />
 
         <View style={styles.metric}>
           <Text style={styles.metricLabel}>Borrowed</Text>
-          <Text style={styles.metricValue}>{borrowedMUSD} MUSD</Text>
+          <Text style={styles.metricValue}>{borrowedMUSD}</Text>
+          <Text style={styles.metricUnit}>MUSD</Text>
         </View>
+      </View>
 
-        <View style={styles.divider} />
-
-        <View style={styles.metric}>
-          <Text style={styles.metricLabel}>Max Borrowable</Text>
-          <Text style={styles.metricValue}>{maxBorrowable} MUSD</Text>
-        </View>
+      <View style={styles.maxBorrowableContainer}>
+        <Text style={styles.maxBorrowableLabel}>Max Borrowable</Text>
+        <Text style={styles.maxBorrowableValue}>{maxBorrowable}</Text>
+        <Text style={styles.maxBorrowableUnit}>MUSD</Text>
       </View>
 
       {healthStatus === 'warning' && (
@@ -129,23 +130,23 @@ export function CollateralHealth({
 
 const styles = StyleSheet.create({
   card: {
-    padding: Spacing.lg,
-    marginBottom: Spacing.md,
+    padding: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   headerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
   title: {
-    fontSize: Typography.heading.sm.fontSize,
-    fontWeight: 'bold',
+    fontSize: Typography.body.md.fontSize,
+    fontWeight: '600',
     color: DesignColors.light.white,
   },
   statusBadge: {
@@ -163,31 +164,60 @@ const styles = StyleSheet.create({
   metricsContainer: {
     flexDirection: 'row',
     justifyContent: 'space-around',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     flexWrap: 'wrap',
-    marginTop: Spacing.sm,
+    marginTop: Spacing.xs,
+    paddingVertical: Spacing.xs,
   },
   metric: {
     alignItems: 'center',
     flex: 1,
     minWidth: 80,
-    marginVertical: Spacing.xs,
   },
   metricLabel: {
-    fontSize: Typography.body.sm.fontSize,
+    fontSize: Typography.caption.md.fontSize,
     color: DesignColors.dark.muted,
-    marginBottom: 4,
+    marginBottom: 2,
   },
   metricValue: {
-    fontSize: Typography.heading.sm.fontSize,
+    fontSize: Typography.body.md.fontSize,
     fontWeight: 'bold',
     color: DesignColors.light.white,
+    lineHeight: 20,
+  },
+  metricUnit: {
+    fontSize: Typography.caption.md.fontSize,
+    color: DesignColors.dark.muted,
+    marginTop: 1,
   },
   divider: {
     width: 1,
-    height: 40,
+    height: 35,
     backgroundColor: DesignColors.dark.muted,
     marginHorizontal: Spacing.xs,
+  },
+  maxBorrowableContainer: {
+    marginTop: Spacing.sm,
+    paddingTop: Spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: DesignColors.dark.muted,
+    alignItems: 'center',
+  },
+  maxBorrowableLabel: {
+    fontSize: Typography.caption.md.fontSize,
+    color: DesignColors.dark.muted,
+    marginBottom: 2,
+  },
+  maxBorrowableValue: {
+    fontSize: Typography.body.md.fontSize,
+    fontWeight: 'bold',
+    color: DesignColors.light.white,
+    lineHeight: 20,
+  },
+  maxBorrowableUnit: {
+    fontSize: Typography.caption.md.fontSize,
+    color: DesignColors.dark.muted,
+    marginTop: 1,
   },
   warningContainer: {
     flexDirection: 'row',
