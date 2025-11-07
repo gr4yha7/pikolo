@@ -21,7 +21,7 @@
  */
 
 import type { Address } from 'viem';
-import { createPublicClient, decodeErrorResult, http, parseEther, parseUnits, type PublicClient, type WalletClient } from 'viem';
+import { createPublicClient, decodeErrorResult, http, parseEther, type PublicClient, type WalletClient } from 'viem';
 
 import { mezoTestnetChain } from '@/constants/chain';
 import BorrowerOperationsABI from '@/lib/contracts/abis/mezo/BorrowerOperations.json';
@@ -127,8 +127,20 @@ export class MezoClient {
         collateralRatio = Infinity;
       }
 
-      // Calculate max borrowable based on 110% MCR (max LTV = 1/1.1 = ~90.91%)
-      const maxBorrowable = (collateralValueUSD * BigInt(90)) / BigInt(100); // Conservative estimate
+      // Get max borrowable from TroveManager (more accurate than manual calculation)
+      let maxBorrowable = BigInt(0);
+      try {
+        maxBorrowable = await this.publicClient.readContract({
+          address: this.config.troveManagerAddress,
+          abi: TroveManagerABI.abi as any,
+          functionName: 'getTroveMaxBorrowingCapacity',
+          args: [userAddress],
+        }) as bigint;
+      } catch (error) {
+        console.warn('Error fetching max borrowing capacity, using fallback calculation:', error);
+        // Fallback to manual calculation if contract call fails
+        maxBorrowable = (collateralValueUSD * BigInt(90)) / BigInt(100);
+      }
 
       // Determine health status
       let healthStatus: 'healthy' | 'warning' | 'danger' = 'healthy';
@@ -169,18 +181,20 @@ export class MezoClient {
 
   /**
    * Get maximum MUSD a user can borrow based on their collateral
+   * Uses TroveManager.getTroveMaxBorrowingCapacity for accurate calculation
    */
   async getMaxBorrowable(userAddress: Address): Promise<bigint> {
     try {
-      const info = await this.getCollateralInfo(userAddress);
-      const btcCollateral = parseUnits(info.btcCollateral, 18);
-      const btcPrice = await this.getBtcPrice();
-      const collateralValueUSD = (btcCollateral * btcPrice) / parseEther('1');
-      // Max borrowable at 110% MCR = collateral value * (1/1.1) ≈ 90.91%
-      const maxBorrowable = (collateralValueUSD * BigInt(9091)) / BigInt(10000); // ~90.91%
-      return maxBorrowable;
+      const maxBorrowable = await this.publicClient.readContract({
+        address: this.config.troveManagerAddress,
+        abi: TroveManagerABI.abi as any,
+        functionName: 'getTroveMaxBorrowingCapacity',
+        args: [userAddress],
+      });
+      return maxBorrowable as bigint;
     } catch (error) {
-      console.error('Error getting max borrowable:', error);
+      console.error('Error getting max borrowable from TroveManager:', error);
+      // Fallback: return 0 if user has no trove or contract call fails
       return BigInt(0);
     }
   }
@@ -229,10 +243,24 @@ export class MezoClient {
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
       if (receipt.status === 'reverted') {
+        // Transaction reverted - try to extract revert reason by simulating the transaction
+        let revertReason = 'Transaction reverted. Please check your trove status and try again.';
+        try {
+          await this.publicClient.simulateContract({
+            address: this.config.borrowerOperationsAddress,
+            abi: BorrowerOperationsABI.abi as any,
+            functionName: 'openTrove',
+            args: [params.musdAmount, params.upperHint, params.lowerHint],
+            value: params.btcAmount,
+            account: accountAddress,
+          });
+        } catch (simError: any) {
+          revertReason = this.parseRevertReason(simError);
+        }
         return {
           txHash: receipt.transactionHash,
           success: false,
-          error: 'Transaction reverted. Please check your trove status and try again.',
+          error: revertReason,
         };
       }
 
@@ -294,40 +322,45 @@ export class MezoClient {
     // Check for common revert reasons and provide user-friendly messages
     const lowerMessage = errorMessage.toLowerCase();
     
-    if (lowerMessage.includes('trove is active') || lowerMessage.includes('borrowerops: trove is active')) {
+    // Trove state errors
+    if (lowerMessage.includes('trove is active') || lowerMessage.includes('borrowerops: trove is active') || lowerMessage.includes('trove already exists')) {
       return 'You already have an active trove. Please use "Add Collateral" or "Borrow More" to modify your existing trove instead of opening a new one.';
     }
     
-    if (lowerMessage.includes('trove does not exist') || lowerMessage.includes('trove is not active')) {
+    if (lowerMessage.includes('trove does not exist') || lowerMessage.includes('trove is not active') || lowerMessage.includes('trove must exist')) {
       return 'No active trove found. Please open a new trove first.';
     }
     
-    if (lowerMessage.includes('insufficient balance') || lowerMessage.includes('erc20: transfer amount exceeds balance') || lowerMessage.includes('erc20insufficientbalance')) {
+    // Balance and allowance errors
+    if (lowerMessage.includes('insufficient balance') || lowerMessage.includes('erc20: transfer amount exceeds balance') || lowerMessage.includes('erc20insufficientbalance') || lowerMessage.includes('insufficient musd balance')) {
       return 'Insufficient balance. Please check your BTC or MUSD balance.';
     }
     
-    if (lowerMessage.includes('collateral ratio') && (lowerMessage.includes('too low') || lowerMessage.includes('below mcr') || lowerMessage.includes('below minimum'))) {
-      return 'This operation would make your collateral ratio too low. Please add more collateral or reduce the amount you want to borrow.';
-    }
-    
-    if (lowerMessage.includes('debt would be below minimum') || lowerMessage.includes('debt must be above minimum')) {
-      return 'The resulting debt would be below the minimum required amount. Please borrow more or close your trove completely.';
-    }
-    
-    if (lowerMessage.includes('erc20insufficientallowance') || lowerMessage.includes('erc20: insufficient allowance')) {
+    if (lowerMessage.includes('erc20insufficientallowance') || lowerMessage.includes('erc20: insufficient allowance') || lowerMessage.includes('insufficient allowance')) {
       return 'Token approval required. Please approve the contract to spend your tokens first.';
     }
     
-    if (lowerMessage.includes('execution reverted')) {
-      // Try to extract the actual revert reason
-      const revertMatch = errorMessage.match(/revert reason[:\s]+(.+?)(?:\n|$)/i);
-      if (revertMatch && revertMatch[1]) {
-        return this.parseRevertReason(revertMatch[1]);
-      }
+    // Collateral ratio errors
+    if (lowerMessage.includes('collateral ratio') && (lowerMessage.includes('too low') || lowerMessage.includes('below mcr') || lowerMessage.includes('below minimum') || lowerMessage.includes('icr must be above mcr'))) {
+      return 'This operation would make your collateral ratio too low. Please add more collateral or reduce the amount you want to borrow.';
     }
     
-    // Return original message if no specific pattern matched
-    return errorMessage || 'Transaction failed. Please try again.';
+    if (lowerMessage.includes('icr must be above ccr') || lowerMessage.includes('tcr must be above ccr') || lowerMessage.includes('total cr must be above ccr')) {
+      return 'This operation would make the total collateralization ratio too low. The system requires a minimum total CR of 150% (CCR).';
+    }
+    
+    // Debt amount errors
+    if (
+      lowerMessage.includes('debt would be below minimum') ||
+      lowerMessage.includes('debt must be above minimum') ||
+      lowerMessage.includes('net debt must be above minimum') ||
+      lowerMessage.includes('debt must be greater than minimum') ||
+      lowerMessage.includes('net debt must be greater than minimum') ||
+      lowerMessage.includes('minnetdebt')
+    ) {
+      return 'The resulting debt would be below the minimum required amount. Please borrow more or close your trove completely.';
+    }
+    return errorMessage;
   }
 
   /**
@@ -358,10 +391,24 @@ export class MezoClient {
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
       if (receipt.status === 'reverted') {
+        // Transaction reverted - try to extract revert reason by simulating the transaction
+        let revertReason = 'Transaction reverted. Please check your trove status and try again.';
+        try {
+          await this.publicClient.simulateContract({
+            address: this.config.borrowerOperationsAddress,
+            abi: BorrowerOperationsABI.abi as any,
+            functionName: 'addColl',
+            args: [params.upperHint, params.lowerHint],
+            value: params.btcAmount,
+            account: accountAddress,
+          });
+        } catch (simError: any) {
+          revertReason = this.parseRevertReason(simError);
+        }
         return {
           txHash: receipt.transactionHash,
           success: false,
-          error: 'Transaction reverted. Please check your trove status and try again.',
+          error: revertReason,
         };
       }
 
@@ -430,10 +477,23 @@ export class MezoClient {
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
       if (receipt.status === 'reverted') {
+        // Transaction reverted - try to extract revert reason by simulating the transaction
+        let revertReason = 'Transaction reverted. Please check your trove status and try again.';
+        try {
+          await this.publicClient.simulateContract({
+            address: this.config.borrowerOperationsAddress,
+            abi: BorrowerOperationsABI.abi as any,
+            functionName: 'repayMUSD',
+            args: [params.musdAmount, params.upperHint, params.lowerHint],
+            account: userAddress,
+          });
+        } catch (simError: any) {
+          revertReason = this.parseRevertReason(simError);
+        }
         return {
           txHash: receipt.transactionHash,
           success: false,
-          error: 'Transaction reverted. Please check your trove status and try again.',
+          error: revertReason,
         };
       }
 
@@ -480,10 +540,23 @@ export class MezoClient {
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
       if (receipt.status === 'reverted') {
+        // Transaction reverted - try to extract revert reason by simulating the transaction
+        let revertReason = 'Transaction reverted. Please check your trove status and try again.';
+        try {
+          await this.publicClient.simulateContract({
+            address: this.config.borrowerOperationsAddress,
+            abi: BorrowerOperationsABI.abi as any,
+            functionName: 'withdrawMUSD',
+            args: [params.musdAmount, params.upperHint, params.lowerHint],
+            account: accountAddress,
+          });
+        } catch (simError: any) {
+          revertReason = this.parseRevertReason(simError);
+        }
         return {
           txHash: receipt.transactionHash,
           success: false,
-          error: 'Transaction reverted. Please check your trove status and try again.',
+          error: revertReason,
         };
       }
 
@@ -530,16 +603,38 @@ export class MezoClient {
 
       const receipt = await this.publicClient.waitForTransactionReceipt({ hash });
 
+      if (receipt.status === 'reverted') {
+        // Transaction reverted - try to extract revert reason by simulating the transaction
+        let revertReason = 'Transaction reverted. Please check your trove status and try again.';
+        try {
+          await this.publicClient.simulateContract({
+            address: this.config.borrowerOperationsAddress,
+            abi: BorrowerOperationsABI.abi as any,
+            functionName: 'closeTrove',
+            args: [],
+            account: accountAddress,
+          });
+        } catch (simError: any) {
+          revertReason = this.parseRevertReason(simError);
+        }
+        return {
+          txHash: receipt.transactionHash,
+          success: false,
+          error: revertReason,
+        };
+      }
+
       return {
         txHash: receipt.transactionHash,
-        success: receipt.status === 'success',
-        error: receipt.status === 'reverted' ? 'Transaction reverted' : undefined,
+        success: true,
+        error: undefined,
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error closing trove:', error);
+      const errorMessage = this.parseRevertReason(error);
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: errorMessage,
         txHash: undefined,
       };
     }
@@ -646,5 +741,225 @@ export class MezoClient {
    */
   getConfig(): MezoConfig {
     return this.config;
+  }
+
+  /**
+   * Fetch trove events for a user
+   * Returns TroveCreated and TroveUpdated events from BorrowerOperations
+   */
+  async getTroveEvents(
+    userAddress: Address,
+    fromBlock?: bigint,
+    toBlock?: bigint,
+  ): Promise<Array<{
+    eventName: 'TroveCreated' | 'TroveUpdated';
+    blockNumber: bigint;
+    transactionHash: string;
+    timestamp: number;
+    args: any;
+  }>> {
+    try {
+      // Get current block if toBlock not provided
+      const currentBlock = toBlock || await this.publicClient.getBlockNumber();
+      // RPC node has a maximum block range of 10,000 blocks
+      // Default to block 8474891 if fromBlock not provided (when BorrowerOperations was deployed/started tracking)
+      const MAX_BLOCK_RANGE = BigInt(10000);
+      const DEFAULT_START_BLOCK = BigInt(8474891);
+      const startBlock = fromBlock || (currentBlock > DEFAULT_START_BLOCK ? DEFAULT_START_BLOCK : BigInt(0));
+
+      console.log(`Fetching trove events for ${userAddress} from block ${startBlock} to ${currentBlock}`);
+
+      // Fetch TroveCreated events using the ABI
+      const troveCreatedEventAbi = (BorrowerOperationsABI.abi as any[]).find(
+        (item) => item.type === 'event' && item.name === 'TroveCreated'
+      );
+
+      if (!troveCreatedEventAbi) {
+        console.error('TroveCreated event ABI not found');
+      }
+
+      let troveCreatedLogs: any[] = [];
+      try {
+        if (troveCreatedEventAbi) {
+          // Ensure block range doesn't exceed RPC limit
+          const blockRange = currentBlock - startBlock;
+          if (blockRange > MAX_BLOCK_RANGE) {
+            // Fetch in chunks if range is too large
+            const chunks: bigint[][] = [];
+            let chunkStart = startBlock;
+            while (chunkStart < currentBlock) {
+              const chunkEnd = chunkStart + MAX_BLOCK_RANGE > currentBlock 
+                ? currentBlock 
+                : chunkStart + MAX_BLOCK_RANGE;
+              chunks.push([chunkStart, chunkEnd]);
+              chunkStart = chunkEnd + BigInt(1);
+            }
+            
+            // Fetch events from each chunk
+            for (const [chunkStartBlock, chunkEndBlock] of chunks) {
+              try {
+                const chunkLogs = await this.publicClient.getLogs({
+                  address: this.config.borrowerOperationsAddress,
+                  event: troveCreatedEventAbi,
+                  args: {
+                    _borrower: userAddress,
+                  },
+                  fromBlock: chunkStartBlock,
+                  toBlock: chunkEndBlock,
+                });
+                troveCreatedLogs.push(...chunkLogs);
+              } catch (chunkError) {
+                console.warn(`Error fetching chunk ${chunkStartBlock}-${chunkEndBlock}:`, chunkError);
+              }
+            }
+          } else {
+            troveCreatedLogs = await this.publicClient.getLogs({
+              address: this.config.borrowerOperationsAddress,
+              event: troveCreatedEventAbi,
+              args: {
+                _borrower: userAddress,
+              },
+              fromBlock: startBlock,
+              toBlock: currentBlock,
+            });
+          }
+          console.log(`Found ${troveCreatedLogs.length} TroveCreated events`);
+        }
+      } catch (error: any) {
+        console.error('Error fetching TroveCreated events:', error?.message || error);
+      }
+
+      // Fetch TroveUpdated events using the ABI
+      const troveUpdatedEventAbi = (BorrowerOperationsABI.abi as any[]).find(
+        (item) => item.type === 'event' && item.name === 'TroveUpdated'
+      );
+
+      if (!troveUpdatedEventAbi) {
+        console.error('TroveUpdated event ABI not found');
+      }
+
+      let troveUpdatedLogs: any[] = [];
+      try {
+        if (troveUpdatedEventAbi) {
+          // Ensure block range doesn't exceed RPC limit
+          const blockRange = currentBlock - startBlock;
+          if (blockRange > MAX_BLOCK_RANGE) {
+            // Fetch in chunks if range is too large
+            const chunks: bigint[][] = [];
+            let chunkStart = startBlock;
+            while (chunkStart < currentBlock) {
+              const chunkEnd = chunkStart + MAX_BLOCK_RANGE > currentBlock 
+                ? currentBlock 
+                : chunkStart + MAX_BLOCK_RANGE;
+              chunks.push([chunkStart, chunkEnd]);
+              chunkStart = chunkEnd + BigInt(1);
+            }
+            
+            // Fetch events from each chunk
+            for (const [chunkStartBlock, chunkEndBlock] of chunks) {
+              try {
+                const chunkLogs = await this.publicClient.getLogs({
+                  address: this.config.borrowerOperationsAddress,
+                  event: troveUpdatedEventAbi,
+                  args: {
+                    _borrower: userAddress,
+                  },
+                  fromBlock: chunkStartBlock,
+                  toBlock: chunkEndBlock,
+                });
+                troveUpdatedLogs.push(...chunkLogs);
+              } catch (chunkError) {
+                console.warn(`Error fetching chunk ${chunkStartBlock}-${chunkEndBlock}:`, chunkError);
+              }
+            }
+          } else {
+            troveUpdatedLogs = await this.publicClient.getLogs({
+              address: this.config.borrowerOperationsAddress,
+              event: troveUpdatedEventAbi,
+              args: {
+                _borrower: userAddress,
+              },
+              fromBlock: startBlock,
+              toBlock: currentBlock,
+            });
+          }
+          console.log(`Found ${troveUpdatedLogs.length} TroveUpdated events`);
+        }
+      } catch (error: any) {
+        console.error('Error fetching TroveUpdated events:', error?.message || error);
+      }
+
+      // Get block timestamps for all unique blocks
+      const blockNumbers = new Set<bigint>();
+      troveCreatedLogs.forEach(log => blockNumbers.add(log.blockNumber));
+      troveUpdatedLogs.forEach(log => blockNumbers.add(log.blockNumber));
+
+      const blockTimestamps = new Map<bigint, number>();
+      await Promise.all(
+        Array.from(blockNumbers).map(async (blockNumber) => {
+          try {
+            const block = await this.publicClient.getBlock({ blockNumber });
+            blockTimestamps.set(blockNumber, Number(block.timestamp));
+          } catch (error) {
+            console.warn(`Failed to fetch block ${blockNumber}:`, error);
+          }
+        })
+      );
+
+      // Combine and format events
+      const events: Array<{
+        eventName: 'TroveCreated' | 'TroveUpdated';
+        blockNumber: bigint;
+        transactionHash: string;
+        timestamp: number;
+        args: any;
+      }> = [];
+
+      // Add TroveCreated events
+      for (const log of troveCreatedLogs) {
+        console.log('TroveCreated log:', {
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          args: log.args,
+        });
+        events.push({
+          eventName: 'TroveCreated',
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          timestamp: blockTimestamps.get(log.blockNumber) || Date.now() / 1000,
+          args: log.args,
+        });
+      }
+
+      // Add TroveUpdated events
+      for (const log of troveUpdatedLogs) {
+        console.log('TroveUpdated log:', {
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          args: log.args,
+        });
+        events.push({
+          eventName: 'TroveUpdated',
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          timestamp: blockTimestamps.get(log.blockNumber) || Date.now() / 1000,
+          args: log.args,
+        });
+      }
+      
+      console.log(`Total events collected: ${events.length}`);
+
+      // Sort by block number (oldest first)
+      events.sort((a, b) => {
+        if (a.blockNumber < b.blockNumber) return -1;
+        if (a.blockNumber > b.blockNumber) return 1;
+        return 0;
+      });
+
+      return events;
+    } catch (error) {
+      console.error('Error fetching trove events:', error);
+      return [];
+    }
   }
 }
