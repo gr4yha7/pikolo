@@ -7,11 +7,11 @@
 
 /**
  * Calculate liquidation price buffer
- * Shows how much BTC price can drop before liquidation
+ * Shows how much BTC price can drop before liquidation (as percentage of liquidation price)
  * 
  * @param currentPrice - Current BTC price in USD
  * @param liquidationPrice - BTC price at which liquidation occurs
- * @returns Buffer as percentage (e.g., 36.86 for 36.86%)
+ * @returns Buffer as percentage (e.g., 111.63 for 111.63%)
  */
 export function calculateLiquidationPriceBuffer(
   currentPrice: number,
@@ -19,8 +19,9 @@ export function calculateLiquidationPriceBuffer(
 ): number {
   if (currentPrice <= 0 || liquidationPrice <= 0) return 0;
   
-  // Buffer = ((current price - liquidation price) / current price) * 100
-  const buffer = ((currentPrice - liquidationPrice) / currentPrice) * 100;
+  // Buffer = ((current price - liquidation price) / liquidation price) * 100
+  // This shows how much the price can drop relative to the liquidation price
+  const buffer = ((currentPrice - liquidationPrice) / liquidationPrice) * 100;
   return Math.max(0, buffer); // Ensure non-negative
 }
 
