@@ -4,6 +4,9 @@
 
 Pikolo is a mobile-first predictions market application that enables users to borrow MUSD (a Bitcoin-backed stablecoin) against their BTC collateral using the Mezo protocol, then use those funds to trade on Bitcoin price prediction markets. **Never sell your Bitcoin—use it as collateral to bet on predictions.**
 
+## Demo Video
+https://drive.google.com/file/d/1ZMAv2szgswUSfABszg_Vqy_RnPa5NrsJ/view?usp=sharing
+
 ## Features
 
 - **Borrow MUSD against BTC**: Deposit BTC collateral and borrow up to ~90.91% LTV at 1% fixed APR
@@ -17,9 +20,6 @@ Pikolo is a mobile-first predictions market application that enables users to bo
 - **Market Resolution**: Automated market resolution via Vercel cron jobs using Mezo PriceFeed
 - **Portfolio Tracking**: View open and closed positions with performance metrics
 - **Mobile-First Design**: Native iOS/Android experience optimized for quick trading
-
-## Demo Video
-https://drive.google.com/file/d/1ZMAv2szgswUSfABszg_Vqy_RnPa5NrsJ/view?usp=sharing
 
 ## How It Works
 
