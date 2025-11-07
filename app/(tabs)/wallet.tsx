@@ -15,6 +15,7 @@ import {
   StatusBar,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -54,6 +55,33 @@ export default function WalletTab() {
     };
     fetchBTCPrice();
   }, [mezoClient, wallet.evmAddress, wallet.isConnected]);
+
+  // Periodically refresh loan information (BTC price and collateral info)
+  // This is important because BTC price changes affect collateralization ratio and liquidation buffer
+  useEffect(() => {
+    if (!mezoClient || !wallet.isConnected || !collateralInfo || parseFloat(collateralInfo.borrowedMUSD) === 0) {
+      return;
+    }
+
+    const POLL_INTERVAL = 60000; // 60 seconds
+
+    const interval = setInterval(async () => {
+      try {
+        // Refresh BTC price (affects collateralization ratio and liquidation calculations)
+        const price = await mezoClient.getBtcPrice();
+        setBtcPrice(Number(price) / 1e18);
+        
+        // Refresh collateral info (debt may have accrued interest, ratio may have changed)
+        if (refetch) {
+          refetch();
+        }
+      } catch (error) {
+        console.error('Error refreshing loan data:', error);
+      }
+    }, POLL_INTERVAL);
+
+    return () => clearInterval(interval);
+  }, [mezoClient, wallet.isConnected, collateralInfo, refetch]);
 
   const handleResetOnboarding = async () => {
     try {
@@ -167,30 +195,30 @@ export default function WalletTab() {
               </View>
             )}
             <View style={styles.actionButtons}>
-              <Button
-                title="Borrow MUSD"
-                onPress={() => router.push('/borrow' as any)}
-                variant="primary"
-                size="md"
-                leftIcon={<Ionicons name="add" size={20} color={DesignColors.dark.primary} />}
-                style={styles.fullWidthButton}
-              />
-              <Button
-                title="Check Borrowing Power"
-                onPress={() => router.push('/check-borrowing-power' as any)}
-                variant="outline"
-                size="md"
-                leftIcon={<Ionicons name="calculator" size={20} color={DesignColors.yellow.primary} />}
-                style={styles.fullWidthButton}
-              />
-              <Button
-                title="Swap"
-                onPress={() => router.push('/swap' as any)}
-                variant="outline"
-                size="md"
-                leftIcon={<Ionicons name="swap-horizontal" size={20} color={DesignColors.yellow.primary} />}
-                style={styles.fullWidthButton}
-              />
+              <TouchableOpacity
+                style={[styles.actionButton, styles.actionButtonPrimary]}
+                onPress={() => router.push('/borrow' as any)}>
+                <View style={styles.actionButtonIconContainer}>
+                  <Text style={styles.actionButtonIconTextPrimary}>$</Text>
+                </View>
+                <Text style={styles.actionButtonTextPrimary}>Borrow</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.actionButtonOutline]}
+                onPress={() => router.push('/swap' as any)}>
+                <View style={styles.actionButtonIconContainer}>
+                  <Ionicons name="swap-vertical" size={24} color={DesignColors.yellow.primary} />
+                </View>
+                <Text style={styles.actionButtonTextOutline}>Swap</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.actionButton, styles.actionButtonOutline]}
+                onPress={() => router.push('/check-borrowing-power' as any)}>
+                <View style={styles.actionButtonIconContainer}>
+                  <Ionicons name="calculator" size={24} color={DesignColors.yellow.primary} />
+                </View>
+                <Text style={styles.actionButtonTextOutline}>Power</Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -244,7 +272,7 @@ export default function WalletTab() {
               {/* Header with Icon */}
               <View style={styles.troveHeader}>
                 <View style={styles.troveIconContainer}>
-                  <Ionicons name="shield-checkmark" size={24} color={DesignColors.yellow.primary} />
+                  <Ionicons name="shield-checkmark" size={20} color={DesignColors.yellow.primary} />
                 </View>
                 <View style={styles.troveHeaderText}>
                   <Text style={styles.borrowTitle}>Manage Your Trove</Text>
@@ -316,6 +344,22 @@ export default function WalletTab() {
                   style={styles.borrowActionButton}
                   leftIcon={<Ionicons name="arrow-down-circle-outline" size={20} color={DesignColors.light.white} />}
                 />
+                <Button
+                  title="Withdraw MUSD"
+                  onPress={() => router.push('/withdraw-musd' as any)}
+                  variant="outline"
+                  size="md"
+                  style={styles.borrowActionButton}
+                  leftIcon={<Ionicons name="arrow-up-circle-outline" size={20} color={DesignColors.yellow.primary} />}
+                />
+                <Button
+                  title="Close Trove"
+                  onPress={() => router.push('/close-trove' as any)}
+                  variant="outline"
+                  size="md"
+                  style={StyleSheet.flatten([styles.borrowActionButton, { borderColor: DesignColors.error, borderWidth: 1 }])}
+                  leftIcon={<Ionicons name="close-circle-outline" size={20} color={DesignColors.error} />}
+                />
               </View>
             </Card>
           </View>
@@ -337,21 +381,22 @@ const styles = StyleSheet.create({
   scrollContent: {
     padding: Spacing.md,
     paddingBottom: 20,
+    paddingTop: Spacing.sm,
   },
   walletCard: {
     borderRadius: Radius.lg,
     overflow: 'hidden',
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   gradient: {
     backgroundColor: DesignColors.purple.primary,
   },
   gradientInner: {
-    padding: Spacing.lg,
+    padding: Spacing.md,
     borderRadius: Radius.lg,
   },
   walletHeader: {
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   userInfo: {
     flexDirection: 'row',
@@ -372,7 +417,7 @@ const styles = StyleSheet.create({
     fontWeight: '500',
   },
   balanceSection: {
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   balanceLabel: {
     color: 'rgba(255, 255, 255, 0.7)',
@@ -381,7 +426,7 @@ const styles = StyleSheet.create({
   },
   balanceValue: {
     color: DesignColors.light.white,
-    fontSize: 36,
+    fontSize: 28,
     fontWeight: 'bold',
   },
   balanceSubtext: {
@@ -393,39 +438,81 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   walletId: {
     color: DesignColors.light.white,
     fontSize: Typography.body.sm.fontSize,
   },
   actionButtons: {
+    flexDirection: 'row',
     gap: Spacing.sm,
     width: '100%',
-    marginTop: Spacing.md,
+    marginTop: Spacing.sm,
+    justifyContent: 'space-between',
+  },
+  actionButton: {
+    flex: 1,
+    borderRadius: Radius.md,
+    paddingVertical: Spacing.md,
+    paddingHorizontal: Spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 80,
+  },
+  actionButtonPrimary: {
+    backgroundColor: DesignColors.yellow.primary,
+  },
+  actionButtonOutline: {
+    backgroundColor: 'transparent',
+    borderWidth: 1,
+    borderColor: DesignColors.light.white,
+  },
+  actionButtonIconContainer: {
+    marginBottom: Spacing.xs,
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 32,
+  },
+  actionButtonIconTextPrimary: {
+    fontSize: 24,
+    fontWeight: '600',
+    color: DesignColors.dark.primary,
+  },
+  actionButtonTextPrimary: {
+    color: DesignColors.dark.primary,
+    fontSize: Typography.body.sm.fontSize,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  actionButtonTextOutline: {
+    color: DesignColors.light.white,
+    fontSize: Typography.body.sm.fontSize,
+    fontWeight: '500',
+    textAlign: 'center',
   },
   fullWidthButton: {
     width: '100%',
   },
   metricsContainer: {
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   metricItem: {
     backgroundColor: DesignColors.dark.card,
-    padding: Spacing.md,
-    borderRadius: Radius.lg,
-    marginBottom: Spacing.md,
+    padding: Spacing.sm,
+    borderRadius: Radius.md,
+    marginBottom: Spacing.sm,
   },
   metricLabel: {
     color: DesignColors.dark.muted,
-    fontSize: Typography.body.sm.fontSize,
-    marginBottom: Spacing.xs,
+    fontSize: Typography.caption.md.fontSize,
+    marginBottom: 2,
   },
   metricValue: {
     color: DesignColors.light.white,
-    fontSize: Typography.heading.lg.fontSize,
+    fontSize: Typography.body.lg.fontSize,
     fontWeight: 'bold',
-    marginBottom: Spacing.xs,
+    marginBottom: 2,
   },
   metricChange: {
     flexDirection: 'row',
@@ -440,29 +527,29 @@ const styles = StyleSheet.create({
     marginTop: Spacing.xs,
   },
   sectionHeader: {
-    marginBottom: Spacing.sm,
+    marginBottom: Spacing.xs,
   },
   sectionHeaderText: {
     color: DesignColors.light.white,
-    fontSize: Typography.heading.sm.fontSize,
+    fontSize: Typography.body.md.fontSize,
     fontWeight: '600',
   },
   borrowSection: {
-    marginBottom: Spacing.md,
+    marginBottom: Spacing.sm,
   },
   borrowCard: {
-    padding: Spacing.lg,
+    padding: Spacing.md,
   },
   troveHeader: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: Spacing.md,
-    marginBottom: Spacing.lg,
+    gap: Spacing.sm,
+    marginBottom: Spacing.sm,
   },
   troveIconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: DesignColors.dark.secondary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -474,20 +561,20 @@ const styles = StyleSheet.create({
   },
   borrowTitle: {
     color: DesignColors.light.white,
-    fontSize: Typography.heading.md.fontSize,
-    fontWeight: 'bold',
-    marginBottom: Spacing.xs,
+    fontSize: Typography.body.md.fontSize,
+    fontWeight: '600',
+    marginBottom: 2,
   },
   borrowSubtitle: {
     color: DesignColors.dark.muted,
-    fontSize: Typography.body.sm.fontSize,
+    fontSize: Typography.caption.md.fontSize,
   },
   troveStats: {
     flexDirection: 'row',
     backgroundColor: DesignColors.dark.secondary,
     borderRadius: Radius.md,
-    padding: Spacing.md,
-    marginBottom: Spacing.lg,
+    padding: Spacing.sm,
+    marginBottom: Spacing.sm,
     alignItems: 'center',
   },
   statItem: {
@@ -496,17 +583,17 @@ const styles = StyleSheet.create({
   },
   statLabel: {
     color: DesignColors.dark.muted,
-    fontSize: Typography.body.sm.fontSize,
-    marginBottom: Spacing.xs,
+    fontSize: Typography.caption.md.fontSize,
+    marginBottom: 2,
   },
   statValue: {
     color: DesignColors.light.white,
-    fontSize: Typography.body.md.fontSize,
+    fontSize: Typography.body.sm.fontSize,
     fontWeight: '600',
   },
   statDivider: {
     width: 1,
-    height: 40,
+    height: 30,
     backgroundColor: DesignColors.dark.muted,
   },
   healthBadge: {
@@ -520,7 +607,7 @@ const styles = StyleSheet.create({
     borderRadius: 4,
   },
   borrowActions: {
-    gap: Spacing.sm,
+    gap: Spacing.xs,
   },
   borrowActionButton: {
     width: '100%',
