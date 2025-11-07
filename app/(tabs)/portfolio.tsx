@@ -89,13 +89,87 @@ export default function PortfolioTab() {
             undefined,
           );
 
-          const [marketData, reserves, userPosition] = await Promise.all([
+          // Check if getUserPurchaseHistory method exists (for backwards compatibility/hot reload)
+          const purchaseHistoryPromise = typeof (marketClient as any).getUserPurchaseHistory === 'function'
+            ? (marketClient as any).getUserPurchaseHistory(wallet.evmAddress as Address).catch(() => [])
+            : Promise.resolve([]);
+
+          const [marketData, reserves, userPosition, purchaseHistory] = await Promise.all([
             marketClient.getMarketData(),
             marketClient.getReserves(),
             marketClient.getUserPosition(wallet.evmAddress as Address),
+            purchaseHistoryPromise,
           ]);
 
           console.log(`Market ${marketAddress}: YesShares=${userPosition.yesShares}, NoShares=${userPosition.noShares}, Status=${marketData.status}`);
+
+          // Helper function to calculate entry value from purchase history using FIFO
+          const calculateEntryValue = (isYes: boolean, currentShares: bigint): number => {
+            if (currentShares === 0n) return 0;
+            
+            // Filter events for this share type
+            const relevantEvents = purchaseHistory.filter((e: { eventName: 'SharesBought' | 'SharesSold'; isYes: boolean; amountIn: bigint; sharesOut: bigint; fee: bigint; blockNumber: bigint; transactionHash: string; timestamp: number }) => e.isYes === isYes);
+            
+            if (relevantEvents.length === 0) {
+              // No purchase history, fallback to 1:1 estimate
+              return Number(formatEther(currentShares));
+            }
+
+            // Calculate net shares and total cost using FIFO
+            let netShares = 0n;
+            let totalCost = 0n;
+            const purchaseQueue: Array<{ shares: bigint; cost: bigint }> = [];
+
+            for (const event of relevantEvents) {
+              if (event.eventName === 'SharesBought') {
+                // Add to queue
+                const costPerShare = event.sharesOut > 0n 
+                  ? (event.amountIn * BigInt(1e18)) / event.sharesOut 
+                  : 0n;
+                purchaseQueue.push({
+                  shares: event.sharesOut,
+                  cost: event.amountIn,
+                });
+                netShares += event.sharesOut;
+                totalCost += event.amountIn;
+              } else if (event.eventName === 'SharesSold') {
+                // Remove from queue using FIFO
+                let remainingToSell = event.sharesOut;
+                while (remainingToSell > 0n && purchaseQueue.length > 0) {
+                  const oldest = purchaseQueue[0];
+                  if (oldest.shares <= remainingToSell) {
+                    // Remove entire purchase
+                    remainingToSell -= oldest.shares;
+                    netShares -= oldest.shares;
+                    totalCost -= oldest.cost;
+                    purchaseQueue.shift();
+                  } else {
+                    // Partially remove purchase
+                    const costPerShare = oldest.shares > 0n 
+                      ? (oldest.cost * BigInt(1e18)) / oldest.shares 
+                      : 0n;
+                    const costToRemove = (remainingToSell * costPerShare) / BigInt(1e18);
+                    oldest.shares -= remainingToSell;
+                    oldest.cost -= costToRemove;
+                    netShares -= remainingToSell;
+                    totalCost -= costToRemove;
+                    remainingToSell = 0n;
+                  }
+                }
+              }
+            }
+
+            // Calculate average entry price for remaining shares
+            if (netShares === 0n || totalCost === 0n) {
+              return Number(formatEther(currentShares)); // Fallback to 1:1
+            }
+
+            // netShares should match currentShares (after accounting for all buys/sells)
+            // Calculate average cost per share from remaining purchases
+            // Use netShares to calculate the average, then apply to currentShares
+            const averagePricePerShare = Number(totalCost) / Number(netShares);
+            return Number(formatEther(currentShares)) * averagePricePerShare;
+          };
 
           // Check if user has any shares
           if (userPosition.yesShares > 0n || userPosition.noShares > 0n) {
@@ -104,15 +178,35 @@ export default function PortfolioTab() {
             const isResolved = marketData.status === 1; // Resolved status
             
             // Get market direction from metadata (defaults to true if not found)
-            const isAboveThreshold = await getMarketIsAboveThreshold(marketAddress);
+            let isAboveThreshold = true; // Default value
+            try {
+              isAboveThreshold = await getMarketIsAboveThreshold(marketAddress);
+            } catch (error) {
+              console.warn(`Failed to get market direction for ${marketAddress}, using default:`, error);
+            }
             
             // Calculate current value and P&L
             if (userPosition.yesShares > 0n) {
-              const sharePrice = calculateSharePrice(reserves.reserveYes, reserves.reserveNo, true);
-              const currentValue = Number(formatEther(userPosition.yesShares)) * sharePrice;
-              const entryValue = Number(formatEther(userPosition.yesShares)); // Estimate 1:1 entry
-              const change = currentValue - entryValue;
-              const changePercent = entryValue > 0 ? (change / entryValue) * 100 : 0;
+              let currentValue: number;
+              let change: number;
+              let changePercent: number;
+              const entryValue = calculateEntryValue(true, userPosition.yesShares);
+              
+              if (isResolved) {
+                // For resolved markets, calculate final value based on outcome
+                // Winning shares = 1:1 payout, losing shares = 0
+                const isWinning = marketData.outcome === 1; // Yes shares win if outcome is 1
+                const sharesValue = Number(formatEther(userPosition.yesShares));
+                currentValue = isWinning ? sharesValue : 0; // 1:1 payout for winners, 0 for losers
+                change = currentValue - entryValue;
+                changePercent = entryValue > 0 ? (change / entryValue) * 100 : 0;
+              } else {
+                // For pending markets, use current share price
+                const sharePrice = calculateSharePrice(reserves.reserveYes, reserves.reserveNo, true);
+                currentValue = Number(formatEther(userPosition.yesShares)) * sharePrice;
+                change = currentValue - entryValue;
+                changePercent = entryValue > 0 ? (change / entryValue) * 100 : 0;
+              }
 
               userPositions.push({
                 marketAddress,
@@ -135,11 +229,26 @@ export default function PortfolioTab() {
             }
 
             if (userPosition.noShares > 0n) {
-              const sharePrice = calculateSharePrice(reserves.reserveYes, reserves.reserveNo, false);
-              const currentValue = Number(formatEther(userPosition.noShares)) * sharePrice;
-              const entryValue = Number(formatEther(userPosition.noShares)); // Estimate 1:1 entry
-              const change = currentValue - entryValue;
-              const changePercent = entryValue > 0 ? (change / entryValue) * 100 : 0;
+              let currentValue: number;
+              let change: number;
+              let changePercent: number;
+              const entryValue = calculateEntryValue(false, userPosition.noShares);
+              
+              if (isResolved) {
+                // For resolved markets, calculate final value based on outcome
+                // Winning shares = 1:1 payout, losing shares = 0
+                const isWinning = marketData.outcome === 0; // No shares win if outcome is 0
+                const sharesValue = Number(formatEther(userPosition.noShares));
+                currentValue = isWinning ? sharesValue : 0; // 1:1 payout for winners, 0 for losers
+                change = currentValue - entryValue;
+                changePercent = entryValue > 0 ? (change / entryValue) * 100 : 0;
+              } else {
+                // For pending markets, use current share price
+                const sharePrice = calculateSharePrice(reserves.reserveYes, reserves.reserveNo, false);
+                currentValue = Number(formatEther(userPosition.noShares)) * sharePrice;
+                change = currentValue - entryValue;
+                changePercent = entryValue > 0 ? (change / entryValue) * 100 : 0;
+              }
 
               userPositions.push({
                 marketAddress,
@@ -172,6 +281,13 @@ export default function PortfolioTab() {
       }
 
       console.log(`Total positions found: ${userPositions.length}`);
+      console.log('Positions details:', userPositions.map(p => ({
+        marketAddress: p.marketAddress,
+        choice: p.choice,
+        shares: p.shares.toString(),
+        status: p.status,
+        isResolved: p.isResolved,
+      })));
       setPositions(userPositions);
       setIsLoadingPositions(false);
   }, [wallet.evmAddress, allMarkets, marketsLoading]);
@@ -209,12 +325,21 @@ export default function PortfolioTab() {
 
   // Filter positions by section
   const filteredPositions = useMemo(() => {
-    return positions.filter((pos) => {
+    const filtered = positions.filter((pos) => {
       // Only show positions with shares > 0
-      if (pos.shares === 0n) return false;
+      if (pos.shares === 0n) {
+        console.log(`Filtering out position with 0 shares: ${pos.marketAddress}`);
+        return false;
+      }
       // Filter by status
-      return activeSection === 'open' ? pos.status === 'pending' : pos.status === 'resolved';
+      const matches = activeSection === 'open' ? pos.status === 'pending' : pos.status === 'resolved';
+      if (!matches) {
+        console.log(`Position ${pos.marketAddress} (${pos.choice}) doesn't match section: status=${pos.status}, activeSection=${activeSection}`);
+      }
+      return matches;
     });
+    console.log(`Filtered positions for ${activeSection} tab: ${filtered.length} out of ${positions.length} total`);
+    return filtered;
   }, [positions, activeSection]);
 
   // Calculate totals

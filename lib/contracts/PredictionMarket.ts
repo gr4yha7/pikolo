@@ -170,6 +170,134 @@ export class PredictionMarketClient {
   }
 
   /**
+   * Get purchase history for a user to calculate average entry price
+   * Returns all SharesBought and SharesSold events for the user
+   */
+  async getUserPurchaseHistory(
+    userAddress: Address,
+    fromBlock?: bigint,
+    toBlock?: bigint,
+  ): Promise<Array<{
+    eventName: 'SharesBought' | 'SharesSold';
+    isYes: boolean;
+    amountIn: bigint; // MUSD spent (for buys) or received (for sells)
+    sharesOut: bigint; // Shares received (for buys) or sold (for sells)
+    fee: bigint;
+    blockNumber: bigint;
+    transactionHash: string;
+    timestamp: number;
+  }>> {
+    const currentBlock = toBlock || await this.publicClient.getBlockNumber();
+    const startBlock = fromBlock || 0n;
+
+    // Find event ABIs
+    const sharesBoughtEventAbi = (this.contract.abi as any[]).find(
+      (item) => item.type === 'event' && item.name === 'SharesBought',
+    );
+    const sharesSoldEventAbi = (this.contract.abi as any[]).find(
+      (item) => item.type === 'event' && item.name === 'SharesSold',
+    );
+
+    if (!sharesBoughtEventAbi || !sharesSoldEventAbi) {
+      console.warn('Event ABIs not found');
+      return [];
+    }
+
+    const events: Array<{
+      eventName: 'SharesBought' | 'SharesSold';
+      isYes: boolean;
+      amountIn: bigint;
+      sharesOut: bigint;
+      fee: bigint;
+      blockNumber: bigint;
+      transactionHash: string;
+      timestamp: number;
+    }> = [];
+
+    try {
+      // Fetch SharesBought events
+      const boughtLogs = await this.publicClient.getLogs({
+        address: this.contract.address,
+        event: sharesBoughtEventAbi,
+        args: {
+          buyer: userAddress,
+        },
+        fromBlock: startBlock,
+        toBlock: currentBlock,
+      });
+
+      // Fetch SharesSold events
+      const soldLogs = await this.publicClient.getLogs({
+        address: this.contract.address,
+        event: sharesSoldEventAbi,
+        args: {
+          seller: userAddress,
+        },
+        fromBlock: startBlock,
+        toBlock: currentBlock,
+      });
+
+      // Get block timestamps
+      const blockNumbers = new Set<bigint>();
+      boughtLogs.forEach(log => blockNumbers.add(log.blockNumber));
+      soldLogs.forEach(log => blockNumbers.add(log.blockNumber));
+
+      const blockTimestamps = new Map<bigint, number>();
+      await Promise.all(
+        Array.from(blockNumbers).map(async (blockNumber) => {
+          try {
+            const block = await this.publicClient.getBlock({ blockNumber });
+            blockTimestamps.set(blockNumber, Number(block.timestamp));
+          } catch (error) {
+            console.warn(`Failed to fetch block ${blockNumber}:`, error);
+          }
+        })
+      );
+
+      // Process SharesBought events
+      for (const log of boughtLogs) {
+        const args = log.args as any;
+        events.push({
+          eventName: 'SharesBought',
+          isYes: args.isYes as boolean,
+          amountIn: args.amountIn as bigint,
+          sharesOut: args.sharesOut as bigint,
+          fee: args.fee as bigint,
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          timestamp: blockTimestamps.get(log.blockNumber) || Date.now() / 1000,
+        });
+      }
+
+      // Process SharesSold events
+      for (const log of soldLogs) {
+        const args = log.args as any;
+        events.push({
+          eventName: 'SharesSold',
+          isYes: args.isYes as boolean,
+          amountIn: args.amountOut as bigint, // amountOut is MUSD received
+          sharesOut: args.sharesAmount as bigint, // sharesAmount is shares sold
+          fee: args.fee as bigint,
+          blockNumber: log.blockNumber,
+          transactionHash: log.transactionHash,
+          timestamp: blockTimestamps.get(log.blockNumber) || Date.now() / 1000,
+        });
+      }
+
+      // Sort by block number (oldest first)
+      events.sort((a, b) => {
+        if (a.blockNumber < b.blockNumber) return -1;
+        if (a.blockNumber > b.blockNumber) return 1;
+        return 0;
+      });
+    } catch (error) {
+      console.error('Error fetching purchase history:', error);
+    }
+
+    return events;
+  }
+
+  /**
    * Buy Yes or No shares
    */
   async buyShares(
