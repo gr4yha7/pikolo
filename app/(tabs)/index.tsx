@@ -91,9 +91,10 @@ export default function HomeScreen() {
               undefined, // No wallet client needed for read operations
             );
 
-            const [marketData, reserves] = await Promise.all([
+            const [marketData, reserves, totalVolume] = await Promise.all([
               marketClient.getMarketData(),
               marketClient.getReserves(),
+              marketClient.getTotalVolume(),
             ]);
 
             // Check if market is resolved
@@ -142,8 +143,8 @@ export default function HomeScreen() {
               }
             }
 
-            // Total volume (simplified)
-            const volume = formatEther(reserves.reserveYes + reserves.reserveNo);
+            // Total volume from contract
+            const volume = formatEther(totalVolume);
             const volumeNum = parseFloat(volume);
             const formattedVolume = volumeNum >= 1000 
               ? `$${(volumeNum / 1000).toFixed(1)}k`
