@@ -52,6 +52,7 @@ export default function RootLayout() {
                 <Stack.Screen name="sell" options={{ headerShown: false }} />
                 <Stack.Screen name="add-collateral" options={{ headerShown: false }} />
                 <Stack.Screen name="repay-debt" options={{ headerShown: false }} />
+                <Stack.Screen name="close-trove" options={{ headerShown: false }} />
               </Stack>
               <StatusBar style="light" />
               <AppKit />
