@@ -265,7 +265,13 @@ export default function SwapScreen() {
               <View style={styles.quoteRow}>
                 <Text style={styles.quoteLabel}>Rate</Text>
                 <Text style={styles.quoteValue}>
-                  1 {fromTokenSymbol} = {toToken === BTC_ADDRESS ? formatBTC(quote.price) : quote.price.toFixed(4)} {toTokenSymbol}
+                  1 {fromTokenSymbol} = {
+                    fromTokenSymbol === 'BTC' 
+                      ? quote.price.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })
+                      : toTokenSymbol === 'BTC'
+                        ? formatBTC(parseEther((1 / quote.price).toString()))
+                        : quote.price.toFixed(4)
+                  } {toTokenSymbol}
                 </Text>
               </View>
               <View style={styles.quoteRow}>
